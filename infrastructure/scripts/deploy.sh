@@ -1,10 +1,12 @@
 #!/bin/bash
-# Deploy the full Telco ODS streaming ML pipeline demo
+# Deploy the full Telco ODS streaming ML pipeline demo via CloudFormation
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TERRAFORM_DIR="$PROJECT_ROOT/infrastructure/terraform"
+CFN_TEMPLATE="$PROJECT_ROOT/infrastructure/cloudformation/stack.yaml"
+STACK_NAME="telco-ods-demo"
+REGION="ap-southeast-2"
 
 echo "============================================================"
 echo "Telco ODS - Autonomous Networks ML Pipeline Demo"
@@ -13,7 +15,7 @@ echo ""
 
 # Prerequisites check
 echo "[1/8] Checking prerequisites..."
-for cmd in terraform aws ssh scp; do
+for cmd in aws ssh scp; do
   if ! command -v $cmd &> /dev/null; then
     echo "Error: $cmd is required but not installed."
     exit 1
@@ -21,116 +23,141 @@ for cmd in terraform aws ssh scp; do
 done
 echo "  All prerequisites found."
 
-# Terraform variables
-if [ -z "$TF_VAR_key_pair_name" ]; then
+# Check for key pair
+if [ -z "$KEY_PAIR_NAME" ]; then
   echo ""
-  echo "Error: Set TF_VAR_key_pair_name to your EC2 key pair name"
-  echo "  export TF_VAR_key_pair_name=your-key-pair"
-  echo ""
-  echo "Optional variables:"
-  echo "  export TF_VAR_allowed_ssh_cidr=your.ip/32"
+  echo "Error: Set KEY_PAIR_NAME to your EC2 key pair name in ap-southeast-2"
+  echo "  export KEY_PAIR_NAME=your-key-pair"
   echo "  export SSH_KEY_PATH=~/.ssh/your-key.pem"
   exit 1
 fi
 
-SSH_KEY_PATH="${SSH_KEY_PATH:-~/.ssh/${TF_VAR_key_pair_name}.pem}"
+SSH_KEY_PATH="${SSH_KEY_PATH:-~/.ssh/${KEY_PAIR_NAME}.pem}"
 
-# Terraform apply
+if [ ! -f "$SSH_KEY_PATH" ]; then
+  # Check project directory
+  if [ -f "$PROJECT_ROOT/${KEY_PAIR_NAME}.pem" ]; then
+    SSH_KEY_PATH="$PROJECT_ROOT/${KEY_PAIR_NAME}.pem"
+  else
+    echo "Error: SSH key not found at $SSH_KEY_PATH"
+    echo "  Set SSH_KEY_PATH to the correct .pem file location"
+    exit 1
+  fi
+fi
+
+echo "  Key pair: $KEY_PAIR_NAME"
+echo "  SSH key:  $SSH_KEY_PATH"
+
+# Deploy CloudFormation stack
 echo ""
-echo "[2/8] Provisioning AWS infrastructure..."
-cd "$TERRAFORM_DIR"
-terraform init -input=false
-terraform apply -auto-approve
+echo "[2/8] Deploying CloudFormation stack..."
+aws cloudformation deploy \
+  --template-file "$CFN_TEMPLATE" \
+  --stack-name "$STACK_NAME" \
+  --region "$REGION" \
+  --parameter-overrides \
+    KeyPairName="$KEY_PAIR_NAME" \
+    AllowedSSHCidr="${ALLOWED_SSH_CIDR:-0.0.0.0/0}" \
+  --capabilities CAPABILITY_IAM \
+  --no-fail-on-empty-changeset
+
+echo "  Stack deployed successfully."
 
 # Get outputs
-KAFKA_IP=$(terraform output -raw kafka_private_ip)
-KAFKA_PUBLIC_IP=$(terraform output -raw kafka_public_ip)
-GENERATOR_IP=$(terraform output -raw generator_public_ip)
-FLINK_IP=$(terraform output -raw flink_public_ip)
-MLFLOW_IP=$(terraform output -raw mlflow_public_ip)
-
 echo ""
-echo "  Kafka:     $KAFKA_PUBLIC_IP (private: $KAFKA_IP)"
+echo "[3/8] Retrieving instance IPs..."
+
+get_output() {
+  aws cloudformation describe-stacks \
+    --stack-name "$STACK_NAME" \
+    --region "$REGION" \
+    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
+    --output text
+}
+
+KAFKA_PRIVATE_IP=$(get_output "KafkaPrivateIP")
+KAFKA_PUBLIC_IP=$(get_output "KafkaPublicIP")
+GENERATOR_IP=$(get_output "GeneratorPublicIP")
+FLINK_IP=$(get_output "FlinkPublicIP")
+MLFLOW_IP=$(get_output "MLflowPublicIP")
+
+echo "  Kafka:     $KAFKA_PUBLIC_IP (private: $KAFKA_PRIVATE_IP)"
 echo "  Generator: $GENERATOR_IP"
 echo "  Flink:     $FLINK_IP"
 echo "  MLflow:    $MLFLOW_IP"
 
-# Wait for instances to be ready
+# Wait for instances
 echo ""
-echo "[3/8] Waiting for instances to initialize (60s)..."
-sleep 60
+echo "[4/8] Waiting for instances to initialize (90s)..."
+sleep 90
 
-# Whitelist IPs in Atlas
+# Atlas IP whitelist
 echo ""
-echo "[4/8] Whitelisting EC2 IPs in MongoDB Atlas..."
-echo "  NOTE: Add these IPs to Atlas Network Access:"
-for ip in $KAFKA_PUBLIC_IP $GENERATOR_IP $FLINK_IP $MLFLOW_IP; do
-  echo "    - $ip/32"
-done
+echo "[5/8] MongoDB Atlas IP Whitelist"
+echo "  Add these IPs to Atlas Network Access (or 0.0.0.0/0 for demo):"
+echo "    - $KAFKA_PUBLIC_IP/32"
+echo "    - $GENERATOR_IP/32"
+echo "    - $FLINK_IP/32"
+echo "    - $MLFLOW_IP/32"
 echo ""
-echo "  Or whitelist 0.0.0.0/0 temporarily for the demo."
 echo "  Press Enter when done..."
 read -r
 
-# Upload and start MLflow
+# Upload and start MLflow model
 echo ""
-echo "[5/8] Setting up MLflow server..."
+echo "[6/8] Setting up MLflow model..."
 scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -r \
-  "$PROJECT_ROOT/ml-model/" ubuntu@${MLFLOW_IP}:/opt/mlflow/app/
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${MLFLOW_IP} << 'EOF'
+  "$PROJECT_ROOT/ml-model/"* ubuntu@${MLFLOW_IP}:/opt/mlflow/app/
+
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${MLFLOW_IP} << 'REMOTEOF'
   cd /opt/mlflow
   source venv/bin/activate
+  source .env
+  export MONGODB_URI MLFLOW_TRACKING_URI
   cd app
-  pip install -r requirements.txt -q
+  pip install -r requirements.txt -q 2>/dev/null
   python generate_training_data.py
   python train_model.py
   nohup bash serve_model.sh > /var/log/mlflow-serve.log 2>&1 &
   sleep 5
   echo "MLflow model serving started"
-EOF
+REMOTEOF
 
 # Upload and start Flink job
 echo ""
-echo "[6/8] Setting up Flink processor..."
+echo "[7/8] Setting up Flink processor..."
 scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -r \
-  "$PROJECT_ROOT/flink-processor/" ubuntu@${FLINK_IP}:/opt/flink-job/
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${FLINK_IP} << EOF
+  "$PROJECT_ROOT/flink-processor/"* ubuntu@${FLINK_IP}:/tmp/flink-job/
+
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${FLINK_IP} << REMOTEOF
   source /opt/flink-env/bin/activate
+  mkdir -p /opt/flink-job
+  cp /tmp/flink-job/* /opt/flink-job/
   cd /opt/flink-job
-  pip install -r requirements.txt -q
-  export KAFKA_BROKER=${KAFKA_IP}:9092
-  export KAFKA_TOPIC=telco-raw-telemetry
-  export MONGODB_URI="${TF_VAR_mongodb_uri:-mongodb+srv://admin:IpAQeOM854tLQ5rP@democluster.hyszr.mongodb.net/?retryWrites=true&w=majority&appName=DemoCluster}"
-  export MONGODB_DB=ods_demo_db
-  export MONGODB_COLLECTION=windowed_network_metrics
-  export WINDOW_SIZE_MINUTES=5
+  pip install -r requirements.txt -q 2>/dev/null
+  source /opt/flink-job-config.env
+  export KAFKA_BROKER KAFKA_TOPIC MONGODB_URI MONGODB_DB MONGODB_COLLECTION WINDOW_SIZE_MINUTES
   nohup python flink_job.py > /var/log/flink-job.log 2>&1 &
-  echo "Flink job submitted"
-EOF
+  echo "Flink job started"
+REMOTEOF
 
 # Upload and start generator
 echo ""
-echo "[7/8] Starting data generator..."
+echo "[8/8] Starting data generator..."
 scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -r \
-  "$PROJECT_ROOT/data-generator/" ubuntu@${GENERATOR_IP}:/opt/telco-generator/app/
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${GENERATOR_IP} << EOF
+  "$PROJECT_ROOT/data-generator/"* ubuntu@${GENERATOR_IP}:/tmp/generator/
+
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${GENERATOR_IP} << REMOTEOF
   cd /opt/telco-generator
   source venv/bin/activate
-  cd app
-  pip install -r requirements.txt -q
-  export KAFKA_BROKER=${KAFKA_IP}:9092
+  cp -r /tmp/generator/* .
+  pip install -r requirements.txt -q 2>/dev/null
+  source env.sh
   nohup python generator.py > /var/log/generator.log 2>&1 &
   echo "Generator started"
-EOF
+REMOTEOF
 
 # Summary
-echo ""
-echo "[8/8] Setup Atlas trigger..."
-echo "  Configure the Atlas Database Trigger manually:"
-echo "  1. Go to Atlas > App Services > Triggers"
-echo "  2. Create trigger on: ods_demo_db.windowed_network_metrics (Insert)"
-echo "  3. Paste code from: atlas-trigger/trigger_function.js"
-echo "  4. Set MLFLOW_ENDPOINT value to: http://${MLFLOW_IP}:5003/invocations"
 echo ""
 echo "============================================================"
 echo "DEPLOYMENT COMPLETE"
@@ -141,8 +168,14 @@ echo "  MLflow Tracking:  http://${MLFLOW_IP}:5002"
 echo "  MLflow Inference: http://${MLFLOW_IP}:5003/invocations"
 echo "  Flink Web UI:     http://${FLINK_IP}:8081"
 echo ""
-echo "Data should appear in MongoDB within 5 minutes:"
-echo "  Collection: ods_demo_db.windowed_network_metrics"
-echo "  Predictions: ods_demo_db.network_health_predictions"
+echo "Next step - configure Atlas Trigger:"
+echo "  1. Atlas > App Services > Triggers"
+echo "  2. Collection: ods_demo_db.windowed_network_metrics (Insert)"
+echo "  3. Paste: atlas-trigger/trigger_function.js"
+echo "  4. Set MLFLOW_ENDPOINT value: http://${MLFLOW_IP}:5003/invocations"
 echo ""
-echo "To tear down: ./teardown.sh"
+echo "Data will appear in MongoDB within 5 minutes:"
+echo "  db.windowed_network_metrics.countDocuments()"
+echo "  db.network_health_predictions.find().sort({timestamp:-1}).limit(5)"
+echo ""
+echo "To tear down: ./infrastructure/scripts/teardown.sh"

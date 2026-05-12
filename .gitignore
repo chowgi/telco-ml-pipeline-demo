@@ -71,12 +71,8 @@ logs/
 *.tmp
 *.temp
 
-# Terraform
-infrastructure/terraform/.terraform/
-infrastructure/terraform/*.tfstate
-infrastructure/terraform/*.tfstate.backup
-infrastructure/terraform/.terraform.lock.hcl
-infrastructure/terraform/terraform.tfvars
+# Terraform (legacy, removed)
+infrastructure/terraform/
 
 # Feast
 feast-feature-store/registry.db

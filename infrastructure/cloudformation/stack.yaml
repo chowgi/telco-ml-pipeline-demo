@@ -1,0 +1,462 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Telco ODS Autonomous Networks ML Pipeline Demo
+
+Parameters:
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 key pair for SSH access
+
+  AllowedSSHCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR block allowed to SSH (restrict to your IP for security)
+
+  MongoDBUri:
+    Type: String
+    NoEcho: true
+    Default: mongodb+srv://admin:IpAQeOM854tLQ5rP@democluster.hyszr.mongodb.net/?retryWrites=true&w=majority&appName=DemoCluster
+    Description: MongoDB Atlas connection string
+
+  UbuntuAMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Description: Ubuntu 22.04 AMI (auto-resolved via SSM)
+
+Resources:
+  # --- VPC & Networking ---
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-igw
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-public
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref RouteTable
+
+  # --- Security Groups ---
+  KafkaSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Kafka broker security group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 9092
+          ToPort: 9092
+          CidrIp: 10.0.0.0/16
+          Description: Kafka broker (VPC internal)
+        - IpProtocol: tcp
+          FromPort: 2181
+          ToPort: 2181
+          CidrIp: 10.0.0.0/16
+          Description: Zookeeper (VPC internal)
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSSHCidr
+          Description: SSH
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-kafka-sg
+
+  PipelineSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Pipeline instances (generator, flink) security group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSSHCidr
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: 8081
+          ToPort: 8081
+          CidrIp: !Ref AllowedSSHCidr
+          Description: Flink Web UI
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-pipeline-sg
+
+  MLflowSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: MLflow server security group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSSHCidr
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: 5002
+          ToPort: 5002
+          CidrIp: 0.0.0.0/0
+          Description: MLflow tracking UI
+        - IpProtocol: tcp
+          FromPort: 5003
+          ToPort: 5003
+          CidrIp: 0.0.0.0/0
+          Description: MLflow model serving
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-mlflow-sg
+
+  # --- EC2 Instances ---
+  KafkaInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAMI
+      InstanceType: t3.xlarge
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref KafkaSG
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 100
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > /var/log/kafka-setup.log 2>&1
+
+          apt-get update
+          apt-get install -y default-jdk wget
+
+          KAFKA_VERSION="3.7.0"
+          SCALA_VERSION="2.13"
+
+          cd /opt
+          wget -q "https://downloads.apache.org/kafka/${KAFKA_VERSION}/kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz" || \
+            wget -q "https://archive.apache.org/dist/kafka/${KAFKA_VERSION}/kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz"
+          tar -xzf "kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz"
+          ln -s "kafka_${SCALA_VERSION}-${KAFKA_VERSION}" kafka
+
+          PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+
+          cat > /opt/kafka/config/server.properties << KAFKAEOF
+          broker.id=0
+          listeners=PLAINTEXT://${!PRIVATE_IP}:9092
+          advertised.listeners=PLAINTEXT://${!PRIVATE_IP}:9092
+          num.network.threads=8
+          num.io.threads=16
+          socket.send.buffer.bytes=102400
+          socket.receive.buffer.bytes=102400
+          socket.request.max.bytes=104857600
+          log.dirs=/var/kafka-logs
+          num.partitions=12
+          num.recovery.threads.per.data.dir=2
+          offsets.topic.replication.factor=1
+          transaction.state.log.replication.factor=1
+          transaction.state.log.min.isr=1
+          log.retention.hours=24
+          log.segment.bytes=1073741824
+          zookeeper.connect=localhost:2181
+          zookeeper.connection.timeout.ms=18000
+          KAFKAEOF
+
+          mkdir -p /var/kafka-logs
+
+          # Systemd services
+          cat > /etc/systemd/system/zookeeper.service << SVCEOF
+          [Unit]
+          Description=Apache Zookeeper
+          After=network.target
+          [Service]
+          Type=simple
+          ExecStart=/opt/kafka/bin/zookeeper-server-start.sh /opt/kafka/config/zookeeper.properties
+          Restart=on-failure
+          [Install]
+          WantedBy=multi-user.target
+          SVCEOF
+
+          cat > /etc/systemd/system/kafka.service << SVCEOF
+          [Unit]
+          Description=Apache Kafka
+          After=zookeeper.service
+          Requires=zookeeper.service
+          [Service]
+          Type=simple
+          ExecStart=/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/server.properties
+          Restart=on-failure
+          RestartSec=10
+          [Install]
+          WantedBy=multi-user.target
+          SVCEOF
+
+          systemctl daemon-reload
+          systemctl enable zookeeper kafka
+          systemctl start zookeeper
+          sleep 10
+          systemctl start kafka
+          sleep 15
+
+          /opt/kafka/bin/kafka-topics.sh --create \
+            --bootstrap-server ${!PRIVATE_IP}:9092 \
+            --topic telco-raw-telemetry \
+            --partitions 12 \
+            --replication-factor 1 \
+            --config retention.ms=86400000
+
+          echo "KAFKA_READY" > /tmp/kafka-status
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-kafka
+
+  MLflowInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAMI
+      InstanceType: t3.large
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref MLflowSG
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > /var/log/mlflow-setup.log 2>&1
+
+          apt-get update
+          apt-get install -y python3-pip python3-venv
+
+          mkdir -p /opt/mlflow/app
+          cd /opt/mlflow
+
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install mlflow scikit-learn pandas numpy pymongo[srv] python-dotenv
+
+          cat > /opt/mlflow/.env << ENVEOF
+          MONGODB_URI=${MongoDBUri}
+          MLFLOW_TRACKING_URI=http://0.0.0.0:5002
+          ENVEOF
+
+          cat > /etc/systemd/system/mlflow-tracking.service << SVCEOF
+          [Unit]
+          Description=MLflow Tracking Server
+          After=network.target
+          [Service]
+          Type=simple
+          WorkingDirectory=/opt/mlflow
+          ExecStart=/opt/mlflow/venv/bin/mlflow server --host 0.0.0.0 --port 5002 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /opt/mlflow/artifacts
+          Restart=on-failure
+          [Install]
+          WantedBy=multi-user.target
+          SVCEOF
+
+          systemctl daemon-reload
+          systemctl enable mlflow-tracking
+          systemctl start mlflow-tracking
+
+          echo "MLFLOW_READY" > /tmp/mlflow-status
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-mlflow
+
+  FlinkInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: KafkaInstance
+    Properties:
+      ImageId: !Ref UbuntuAMI
+      InstanceType: c5.4xlarge
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref PipelineSG
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 50
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > /var/log/flink-setup.log 2>&1
+
+          apt-get update
+          apt-get install -y default-jdk python3-pip python3-venv wget
+
+          FLINK_VERSION="1.18.1"
+          cd /opt
+          wget -q "https://archive.apache.org/dist/flink/flink-${!FLINK_VERSION}/flink-${!FLINK_VERSION}-bin-scala_2.12.tgz"
+          tar -xzf "flink-${!FLINK_VERSION}-bin-scala_2.12.tgz"
+          ln -s "flink-${!FLINK_VERSION}" flink
+
+          wget -q -P /opt/flink/lib/ "https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.1.0-1.18/flink-sql-connector-kafka-3.1.0-1.18.jar"
+
+          cat > /opt/flink/conf/flink-conf.yaml << FLINKEOF
+          jobmanager.rpc.address: localhost
+          jobmanager.rpc.port: 6123
+          jobmanager.memory.process.size: 4096m
+          taskmanager.memory.process.size: 12288m
+          taskmanager.numberOfTaskSlots: 8
+          parallelism.default: 4
+          rest.port: 8081
+          rest.address: 0.0.0.0
+          FLINKEOF
+
+          python3 -m venv /opt/flink-env
+          source /opt/flink-env/bin/activate
+          pip install apache-flink==1.18.1 pymongo[srv] numpy
+
+          cat > /opt/flink-job-config.env << CFGEOF
+          KAFKA_BROKER=${KafkaInstance.PrivateIp}:9092
+          KAFKA_TOPIC=telco-raw-telemetry
+          MONGODB_URI=${MongoDBUri}
+          MONGODB_DB=ods_demo_db
+          MONGODB_COLLECTION=windowed_network_metrics
+          WINDOW_SIZE_MINUTES=5
+          CFGEOF
+
+          /opt/flink/bin/start-cluster.sh
+          echo "FLINK_READY" > /tmp/flink-status
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-flink
+
+  GeneratorInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: KafkaInstance
+    Properties:
+      ImageId: !Ref UbuntuAMI
+      InstanceType: c5.2xlarge
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref PipelineSG
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > /var/log/generator-setup.log 2>&1
+
+          apt-get update
+          apt-get install -y python3-pip python3-venv
+
+          mkdir -p /opt/telco-generator
+          cd /opt/telco-generator
+
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install confluent-kafka numpy
+
+          cat > /opt/telco-generator/env.sh << ENVEOF
+          export KAFKA_BROKER=${KafkaInstance.PrivateIp}:9092
+          export KAFKA_TOPIC=telco-raw-telemetry
+          ENVEOF
+
+          echo "GENERATOR_READY" > /tmp/generator-status
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-generator
+
+Outputs:
+  KafkaPrivateIP:
+    Value: !GetAtt KafkaInstance.PrivateIp
+    Description: Kafka broker private IP
+
+  KafkaPublicIP:
+    Value: !GetAtt KafkaInstance.PublicIp
+    Description: Kafka broker public IP
+
+  GeneratorPublicIP:
+    Value: !GetAtt GeneratorInstance.PublicIp
+    Description: Data generator public IP
+
+  FlinkPublicIP:
+    Value: !GetAtt FlinkInstance.PublicIp
+    Description: Flink public IP
+
+  FlinkWebUI:
+    Value: !Sub http://${FlinkInstance.PublicIp}:8081
+    Description: Flink Web UI
+
+  MLflowPublicIP:
+    Value: !GetAtt MLflowInstance.PublicIp
+    Description: MLflow public IP
+
+  MLflowTrackingURL:
+    Value: !Sub http://${MLflowInstance.PublicIp}:5002
+    Description: MLflow tracking server
+
+  MLflowServingURL:
+    Value: !Sub http://${MLflowInstance.PublicIp}:5003/invocations
+    Description: MLflow model serving endpoint
+
+  AtlasWhitelistIPs:
+    Value: !Sub "${KafkaInstance.PublicIp}, ${GeneratorInstance.PublicIp}, ${FlinkInstance.PublicIp}, ${MLflowInstance.PublicIp}"
+    Description: IPs to whitelist in MongoDB Atlas

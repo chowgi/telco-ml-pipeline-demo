@@ -2,34 +2,39 @@
 # Tear down all AWS resources for the Telco ODS demo
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TERRAFORM_DIR="$SCRIPT_DIR/../terraform"
+STACK_NAME="telco-ods-demo"
+REGION="ap-southeast-2"
 
 echo "============================================================"
 echo "Telco ODS Demo - Teardown"
 echo "============================================================"
 echo ""
-echo "This will destroy ALL AWS resources created by this demo."
+echo "This will DELETE the CloudFormation stack and ALL resources:"
+echo "  - 4 EC2 instances (Kafka, Generator, Flink, MLflow)"
+echo "  - VPC, subnet, security groups"
+echo ""
 echo "Press Ctrl+C to cancel, or Enter to continue..."
 read -r
 
 echo ""
-echo "[1/3] Destroying AWS infrastructure..."
-cd "$TERRAFORM_DIR"
-terraform destroy -auto-approve
+echo "[1/2] Deleting CloudFormation stack..."
+aws cloudformation delete-stack \
+  --stack-name "$STACK_NAME" \
+  --region "$REGION"
+
+echo "  Waiting for stack deletion..."
+aws cloudformation wait stack-delete-complete \
+  --stack-name "$STACK_NAME" \
+  --region "$REGION"
 
 echo ""
-echo "[2/3] Cleaning up..."
-echo "  NOTE: MongoDB Atlas collections are NOT deleted."
-echo "  To clean up MongoDB data manually:"
-echo "    - Drop ods_demo_db.windowed_network_metrics"
-echo "    - Drop ods_demo_db.network_health_predictions"
-echo "    - Drop ods_demo_db.feast_online_features"
-echo "    - Remove Atlas trigger via App Services UI"
-echo "    - Remove IP whitelist entries"
-
+echo "[2/2] Done."
 echo ""
-echo "[3/3] Done."
+echo "All AWS resources destroyed."
 echo ""
-echo "All AWS resources have been destroyed."
-echo "Estimated savings: ~\$12.50/day"
+echo "NOTE: MongoDB Atlas data is NOT deleted. To clean up:"
+echo "  - Drop ods_demo_db.windowed_network_metrics"
+echo "  - Drop ods_demo_db.network_health_predictions"
+echo "  - Drop ods_demo_db.feast_online_features"
+echo "  - Remove Atlas trigger via App Services UI"
+echo "  - Remove IP whitelist entries"

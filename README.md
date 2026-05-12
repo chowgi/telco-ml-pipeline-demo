@@ -25,12 +25,11 @@ EC2 Generator ──> Kafka (EC2) ──> PyFlink (5-min windows) ──> MongoD
 | Feast Feature Store | `feast-feature-store/` | MongoDB online store for feature serving |
 | Atlas Trigger | `atlas-trigger/` | Database trigger calling MLflow on new windowed data |
 | Atlas Charts | `atlas-charts/` | Real-time dashboard configuration |
-| Infrastructure | `infrastructure/` | Terraform IaC + deploy/teardown scripts |
+| Infrastructure | `infrastructure/` | CloudFormation + deploy/teardown scripts |
 
 ## Prerequisites
 
 - AWS CLI configured with ap-southeast-2 access
-- Terraform >= 1.5
 - An EC2 Key Pair in ap-southeast-2 (see below)
 - SSH client
 
@@ -52,10 +51,10 @@ Or create one in the AWS Console: EC2 > Key Pairs > Create key pair.
 
 ```bash
 # 1. Set required variables
-export TF_VAR_key_pair_name=telco-demo
-export SSH_KEY_PATH=~/.ssh/telco-demo.pem
+export KEY_PAIR_NAME=your-key-pair-name
+export SSH_KEY_PATH=~/.ssh/your-key.pem
 
-# 2. Deploy everything
+# 2. Deploy everything (CloudFormation + app setup)
 ./infrastructure/scripts/deploy.sh
 
 # 3. Validate pipeline is running
@@ -66,7 +65,7 @@ export SSH_KEY_PATH=~/.ssh/telco-demo.pem
 ```
 
 The deploy script will:
-1. Provision 4 EC2 instances (Kafka, Generator, Flink, MLflow) via Terraform
+1. Deploy a CloudFormation stack with 4 EC2 instances (Kafka, Generator, Flink, MLflow)
 2. Prompt you to whitelist IPs in MongoDB Atlas
 3. Train and deploy the ML model
 4. Start the Flink streaming job
