@@ -23,6 +23,27 @@ for cmd in aws ssh scp; do
 done
 echo "  All prerequisites found."
 
+# Check for pre-baked AMIs (created by create-amis.sh)
+echo ""
+echo "  Checking for pre-baked AMIs..."
+KAFKA_AMI=$(aws ec2 describe-images --owners self --filters "Name=tag:TelcoODS,Values=kafka" "Name=tag:Latest,Values=true" --region "$REGION" --query 'Images[0].ImageId' --output text 2>/dev/null || echo "None")
+FLINK_AMI=$(aws ec2 describe-images --owners self --filters "Name=tag:TelcoODS,Values=flink" "Name=tag:Latest,Values=true" --region "$REGION" --query 'Images[0].ImageId' --output text 2>/dev/null || echo "None")
+MLFLOW_AMI=$(aws ec2 describe-images --owners self --filters "Name=tag:TelcoODS,Values=mlflow" "Name=tag:Latest,Values=true" --region "$REGION" --query 'Images[0].ImageId' --output text 2>/dev/null || echo "None")
+GENERATOR_AMI=$(aws ec2 describe-images --owners self --filters "Name=tag:TelcoODS,Values=generator" "Name=tag:Latest,Values=true" --region "$REGION" --query 'Images[0].ImageId' --output text 2>/dev/null || echo "None")
+
+if [ "$KAFKA_AMI" != "None" ] && [ "$KAFKA_AMI" != "null" ] && [ -n "$KAFKA_AMI" ]; then
+  echo "  Found pre-baked AMIs! Using fast deploy path."
+  echo "    Kafka:     $KAFKA_AMI"
+  echo "    Flink:     $FLINK_AMI"
+  echo "    MLflow:    $MLFLOW_AMI"
+  echo "    Generator: $GENERATOR_AMI"
+  USE_CUSTOM_AMIS=true
+else
+  echo "  No pre-baked AMIs found. Using default Ubuntu (first deploy will be slower)."
+  echo "  After deploy, run: ./infrastructure/scripts/create-amis.sh"
+  USE_CUSTOM_AMIS=false
+fi
+
 # Check for key pair
 if [ -z "$KEY_PAIR_NAME" ]; then
   echo ""
@@ -51,13 +72,18 @@ echo "  SSH key:  $SSH_KEY_PATH"
 # Deploy CloudFormation stack
 echo ""
 echo "[2/8] Deploying CloudFormation stack..."
+
+CFN_PARAMS="KeyPairName=$KEY_PAIR_NAME AllowedSSHCidr=${ALLOWED_SSH_CIDR:-0.0.0.0/0}"
+
+if [ "$USE_CUSTOM_AMIS" = true ]; then
+  CFN_PARAMS="$CFN_PARAMS KafkaAMI=$KAFKA_AMI FlinkAMI=$FLINK_AMI MLflowAMI=$MLFLOW_AMI GeneratorAMI=$GENERATOR_AMI"
+fi
+
 aws cloudformation deploy \
   --template-file "$CFN_TEMPLATE" \
   --stack-name "$STACK_NAME" \
   --region "$REGION" \
-  --parameter-overrides \
-    KeyPairName="$KEY_PAIR_NAME" \
-    AllowedSSHCidr="${ALLOWED_SSH_CIDR:-0.0.0.0/0}" \
+  --parameter-overrides $CFN_PARAMS \
   --capabilities CAPABILITY_IAM \
   --no-fail-on-empty-changeset
 
@@ -131,13 +157,11 @@ scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -r \
 
 ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${FLINK_IP} << REMOTEOF
   source /opt/flink-env/bin/activate
-  mkdir -p /opt/flink-job
   cp /tmp/flink-job/* /opt/flink-job/
   cd /opt/flink-job
   pip install -r requirements.txt -q 2>/dev/null
-  source /opt/flink-job-config.env
-  export KAFKA_BROKER KAFKA_TOPIC MONGODB_URI MONGODB_DB MONGODB_COLLECTION WINDOW_SIZE_MINUTES
-  nohup python flink_job.py > /var/log/flink-job.log 2>&1 &
+  export \$(cat /opt/flink-job-config.env | xargs)
+  nohup python -u flink_job.py > /var/log/flink-job.log 2>&1 &
   echo "Flink job started"
 REMOTEOF
 
@@ -153,7 +177,8 @@ ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${GENERATOR_IP} << REM
   cp -r /tmp/generator/* .
   pip install -r requirements.txt -q 2>/dev/null
   source env.sh
-  nohup python generator.py > /var/log/generator.log 2>&1 &
+  export KAFKA_BROKER KAFKA_TOPIC
+  nohup python -u generator.py > /var/log/generator.log 2>&1 &
   echo "Generator started"
 REMOTEOF
 
@@ -166,7 +191,6 @@ echo ""
 echo "Endpoints:"
 echo "  MLflow Tracking:  http://${MLFLOW_IP}:5002"
 echo "  MLflow Inference: http://${MLFLOW_IP}:5003/invocations"
-echo "  Flink Web UI:     http://${FLINK_IP}:8081"
 echo ""
 echo "Next step - configure Atlas Trigger:"
 echo "  1. Atlas > App Services > Triggers"

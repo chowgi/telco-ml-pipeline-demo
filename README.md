@@ -5,7 +5,7 @@ End-to-end streaming ML pipeline demonstrating MongoDB Atlas as an Operational D
 ## Architecture
 
 ```
-EC2 Generator ──> Kafka (EC2) ──> PyFlink (5-min windows) ──> MongoDB Atlas (ODS)
+EC2 Generator ──> Kafka (EC2) ──> Stream Processor (5-min windows) ──> MongoDB Atlas (ODS)
    (~80k eps)     single broker     aggregates metrics             |
                                                                    |
                     Atlas Charts <── predictions <── Atlas Trigger ──> MLflow EC2
@@ -20,7 +20,7 @@ EC2 Generator ──> Kafka (EC2) ──> PyFlink (5-min windows) ──> MongoD
 | Component | Location | Purpose |
 |-----------|----------|---------|
 | Data Generator | `data-generator/` | High-throughput Kafka producer simulating cell tower telemetry |
-| Flink Processor | `flink-processor/` | PyFlink job with 5-min tumbling windows, writes to MongoDB |
+| Stream Processor | `flink-processor/` | Streaming processor with 5-min tumbling windows, writes to MongoDB |
 | ML Model | `ml-model/` | RandomForest network health classifier served via MLflow |
 | Feast Feature Store | `feast-feature-store/` | MongoDB online store for feature serving |
 | Atlas Trigger | `atlas-trigger/` | Database trigger calling MLflow on new windowed data |
@@ -79,7 +79,7 @@ The deploy script will:
 | VPC | - | Networking | $0 |
 | EC2 Kafka | t3.xlarge | Single-broker Kafka | ~$1.50/day |
 | EC2 Generator | c5.2xlarge | ~80k events/sec producer | ~$3/day |
-| EC2 Flink | c5.4xlarge | PyFlink standalone cluster | ~$6/day |
+| EC2 Processor | c5.4xlarge | Streaming window aggregation | ~$6/day |
 | EC2 MLflow | t3.large | Model tracking + serving | ~$2/day |
 | **Total** | | | **~$12.50/day** |
 
@@ -87,7 +87,7 @@ The deploy script will:
 
 1. **Generator** produces ~80k events/sec of simulated cell tower telemetry (50 towers across Sydney, Melbourne, Brisbane, Perth, Adelaide) with 5% anomaly injection
 2. **Kafka** buffers events on topic `telco-raw-telemetry` (12 partitions)
-3. **Flink** consumes from Kafka, applies 5-minute tumbling windows keyed by `cell_id`, computes avg/min/max/p95 for all metrics
+3. **Stream Processor** consumes from Kafka, applies 5-minute tumbling windows keyed by `cell_id`, computes avg/min/max/p95 for all metrics
 4. **MongoDB Atlas** receives windowed aggregates into `windowed_network_metrics` time series collection
 5. **Atlas Trigger** fires on insert, extracts avg features, calls MLflow `/invocations`
 6. **MLflow** returns prediction (excellent/good/poor), trigger writes to `network_health_predictions`
