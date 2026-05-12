@@ -37,6 +37,9 @@ mlflow-v2/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# SSH keys
+*.pem
+
 # Environment variables
 .env
 .env.local
@@ -67,3 +70,17 @@ logs/
 # Temporary files
 *.tmp
 *.temp
+
+# Terraform
+infrastructure/terraform/.terraform/
+infrastructure/terraform/*.tfstate
+infrastructure/terraform/*.tfstate.backup
+infrastructure/terraform/.terraform.lock.hcl
+infrastructure/terraform/terraform.tfvars
+
+# Feast
+feast-feature-store/registry.db
+feast-feature-store/data/
+
+# Parquet files
+*.parquet

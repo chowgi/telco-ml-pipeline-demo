@@ -1,0 +1,4 @@
+feast[mongodb]>=0.37.0
+pymongo[srv]>=4.6.0
+pandas>=2.0.0
+python-dotenv>=1.0.0

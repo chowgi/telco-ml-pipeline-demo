@@ -1,375 +1,182 @@
-# Telco ODS Network Health Classifier
+# Telco ODS - Autonomous Networks ML Pipeline
 
-> ⚠️ **DEMO ONLY**: This is a demonstration system for showcasing ML pipeline capabilities. It is **NOT production-ready** and should not be used in production environments.
+End-to-end streaming ML pipeline demonstrating MongoDB Atlas as an Operational Data Store for network health anomaly detection. Built for the Telstra ODS evaluation.
 
-A **DEMO** machine learning system for predicting network health based on real-time network metrics using MLflow and MongoDB. This is for demonstration purposes only and is not production-ready.
+## Architecture
 
-## 🎯 Overview
-
-This **DEMO** project provides a complete ML pipeline for network health classification with deployment capabilities for demonstration purposes:
-
-- **📊 Data Pipeline**: Feature engineering from raw network data to gold-tier features
-- **🤖 Model Training**: RandomForest classifier with advanced class balancing
-- **🔬 MLOps**: MLflow integration for experiment tracking and model serving
-- **🚀 Real-time Streaming**: Kafka + Stream Processor for real-time network health inference
-- **⚡ Stream Processing**: Confluent Cloud Kafka with MongoDB Atlas triggers
-- **🧪 Testing**: Comprehensive model validation with real data and edge cases
-
-## 📁 Project Structure
-
-### 🎯 Core Scripts
-- **`train_ml_model.py`** - Main ML training script with MLflow integration
-- **`test_model_predictions.py`** - Comprehensive model testing suite
-- **`start_mlflow.sh`** - Streamlined MLflow startup with health checks (runs on the remote server)
-- **`stop_mlflow.sh`** - Clean shutdown script (runs on the remote server)
-
-### 📊 Data Pipeline
-- **`feature-engineering-gold-tier.py`** - Gold tier feature engineering
-- **`feature-engineering-silver-tier.py`** - Silver tier feature engineering
-- **`create_dummy_data.py`** - Data generation for testing
-- **`clean_data.py`** - Data cleaning utilities
-
-### 🔄 Real-time Processing & Streaming
-- **`atlas_trigger.js`** - MongoDB Atlas trigger for real-time ML inference
-- **`test_realtime_inference.py`** - Test script for real-time model predictions
-- **Kafka Streaming**: Confluent Cloud Kafka for real-time data ingestion
-- **Stream Processing**: Real-time network health predictions via Kafka + MongoDB Atlas
-
-### 📚 Documentation
-- **`README.md`** - This comprehensive guide
-- **`requirements.txt`** - Python dependencies
-- **`Operational Datastore for Autonomous Networks (2).pdf`** - Project specification
-
-## 🔄 Real-time Streaming Architecture
-
-This demo includes a complete real-time streaming pipeline:
-
-### **Kafka + Stream Processing**
-- **📡 Data Ingestion**: Confluent Cloud Kafka receives network telemetry data
-- **⚡ Stream Processing**: MongoDB Atlas triggers process data in real-time
-- **🤖 ML Inference**: MLflow model serves predictions via Atlas triggers
-- **📊 Storage**: Predictions stored in MongoDB for real-time dashboards
-
-### **Streaming Flow**
 ```
-Network Data → Kafka → MongoDB → Atlas Trigger → MLflow → Predictions
+EC2 Generator ──> Kafka (EC2) ──> PyFlink (5-min windows) ──> MongoDB Atlas (ODS)
+   (~80k eps)     single broker     aggregates metrics             |
+                                                                   |
+                    Atlas Charts <── predictions <── Atlas Trigger ──> MLflow EC2
+                    (real-time)      collection     (on insert)        (/invocations)
+                                                        |
+                                              Feast Feature Store
+                                              (MongoDB online store)
 ```
 
-## 🚀 Quick Start (Demo Only)
+## Components
 
-> ⚠️ **Note**: This is a demonstration system only. Do not use in production environments.
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| Data Generator | `data-generator/` | High-throughput Kafka producer simulating cell tower telemetry |
+| Flink Processor | `flink-processor/` | PyFlink job with 5-min tumbling windows, writes to MongoDB |
+| ML Model | `ml-model/` | RandomForest network health classifier served via MLflow |
+| Feast Feature Store | `feast-feature-store/` | MongoDB online store for feature serving |
+| Atlas Trigger | `atlas-trigger/` | Database trigger calling MLflow on new windowed data |
+| Atlas Charts | `atlas-charts/` | Real-time dashboard configuration |
+| Infrastructure | `infrastructure/` | Terraform IaC + deploy/teardown scripts |
 
-### 1. Environment Setup
+## Prerequisites
+
+- AWS CLI configured with ap-southeast-2 access
+- Terraform >= 1.5
+- An EC2 Key Pair in ap-southeast-2 (see below)
+- SSH client
+
+### Create an EC2 Key Pair
+
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+aws ec2 create-key-pair \
+  --region ap-southeast-2 \
+  --key-name telco-demo \
+  --query 'KeyMaterial' \
+  --output text > ~/.ssh/telco-demo.pem
 
-# Set environment variables
-export MONGODB_URI="your_mongodb_connection_string"
-export MONGODB_DATABASE="ods_demo_db"
-export MLFLOW_TRACKING_URI="http://ec2-13-236-153-18.ap-southeast-2.compute.amazonaws.com:5002"
+chmod 400 ~/.ssh/telco-demo.pem
 ```
 
-### 2. Train Model
+Or create one in the AWS Console: EC2 > Key Pairs > Create key pair.
+
+## Quick Start
+
 ```bash
-python train_ml_model.py
+# 1. Set required variables
+export TF_VAR_key_pair_name=telco-demo
+export SSH_KEY_PATH=~/.ssh/telco-demo.pem
+
+# 2. Deploy everything
+./infrastructure/scripts/deploy.sh
+
+# 3. Validate pipeline is running
+./infrastructure/scripts/validate.sh
+
+# 4. Tear down when done
+./infrastructure/scripts/teardown.sh
 ```
 
-### 3. Test Model
+The deploy script will:
+1. Provision 4 EC2 instances (Kafka, Generator, Flink, MLflow) via Terraform
+2. Prompt you to whitelist IPs in MongoDB Atlas
+3. Train and deploy the ML model
+4. Start the Flink streaming job
+5. Start the data generator
+6. Print instructions for the Atlas trigger setup
+
+## AWS Resources (ap-southeast-2)
+
+| Resource | Instance Type | Purpose | Est. Cost |
+|----------|---------------|---------|-----------|
+| VPC | - | Networking | $0 |
+| EC2 Kafka | t3.xlarge | Single-broker Kafka | ~$1.50/day |
+| EC2 Generator | c5.2xlarge | ~80k events/sec producer | ~$3/day |
+| EC2 Flink | c5.4xlarge | PyFlink standalone cluster | ~$6/day |
+| EC2 MLflow | t3.large | Model tracking + serving | ~$2/day |
+| **Total** | | | **~$12.50/day** |
+
+## Data Flow
+
+1. **Generator** produces ~80k events/sec of simulated cell tower telemetry (50 towers across Sydney, Melbourne, Brisbane, Perth, Adelaide) with 5% anomaly injection
+2. **Kafka** buffers events on topic `telco-raw-telemetry` (12 partitions)
+3. **Flink** consumes from Kafka, applies 5-minute tumbling windows keyed by `cell_id`, computes avg/min/max/p95 for all metrics
+4. **MongoDB Atlas** receives windowed aggregates into `windowed_network_metrics` time series collection
+5. **Atlas Trigger** fires on insert, extracts avg features, calls MLflow `/invocations`
+6. **MLflow** returns prediction (excellent/good/poor), trigger writes to `network_health_predictions`
+7. **Atlas Charts** displays real-time dashboard via Change Streams
+
+## Model Details
+
+**Type:** RandomForest Classifier (scikit-learn Pipeline with StandardScaler)
+
+**Features (6):**
+- `signal_strength_dbm` — avg signal strength in window
+- `throughput_mbps` — avg throughput in window
+- `latency_ms` — avg latency in window
+- `call_drop_rate_percent` — avg call drop rate in window
+- `packet_loss_percent` — avg packet loss in window
+- `jitter_ms` — avg jitter in window
+
+**Predictions:**
+- `0` = excellent network health
+- `1` = good network health
+- `2` = poor network health
+
+## Inference API
+
 ```bash
-python test_model_predictions.py
-```
-
-### 4. Deploy to Production
-```bash
-# Copy scripts to EC2
-scp start_mlflow.sh stop_mlflow.sh ubuntu@ec2-13-236-153-18.ap-southeast-2.compute.amazonaws.com:~/
-
-# SSH and deploy
-ssh ubuntu@ec2-13-236-153-18.ap-southeast-2.compute.amazonaws.com
-chmod +x start_mlflow.sh stop_mlflow.sh
-./start_mlflow.sh
-```
-
-## 🧠 Model Details
-
-### Features
-- **`signal_strength_dbm`** - Signal strength in dBm (-100 to -30)
-- **`throughput_mbps`** - Network throughput in Mbps (0-300)
-- **`latency_ms`** - Network latency in milliseconds (1-1000)
-- **`call_drop_rate_percent`** - Call drop rate percentage (0-10)
-- **`packet_loss_percent`** - Packet loss percentage (0-10)
-- **`jitter_ms`** - Network jitter in milliseconds (0-50)
-
-### Predictions
-- **0** - Excellent network health
-- **1** - Good network health  
-- **2** - Poor network health
-
-### Performance
-- **Accuracy**: 99.9%
-- **Precision**: 99.9% (weighted average)
-- **Recall**: 99.9% (weighted average)
-- **F1-Score**: 99.9% (weighted average)
-
-## 🔧 API Usage
-
-### Model Endpoint
-```bash
-POST http://ec2-13-236-153-18.ap-southeast-2.compute.amazonaws.com:5003/invocations
-Content-Type: application/json
-
-{
-  "dataframe_records": [
-    {
-      "signal_strength_dbm": -65,
-      "throughput_mbps": 75,
-      "latency_ms": 35,
-      "call_drop_rate_percent": 0.8,
-      "packet_loss_percent": 0.8,
-      "jitter_ms": 2.5
-    }
-  ]
-}
-```
-
-### Response
-```json
-{"predictions": [1.0]}  // 1 = good network health
-```
-
-### Test Examples
-```bash
-# Excellent Network (should return [0.0])
-curl -X POST http://ec2-13-236-153-18.ap-southeast-2.compute.amazonaws.com:5003/invocations \
-  -H "Content-Type: application/json" \
-  -d '{"dataframe_records": [{"signal_strength_dbm": -45, "throughput_mbps": 150, "latency_ms": 15, "call_drop_rate_percent": 0.1, "packet_loss_percent": 0.2, "jitter_ms": 0.5}]}'
-
-# Good Network (should return [1.0])
-curl -X POST http://ec2-13-236-153-18.ap-southeast-2.compute.amazonaws.com:5003/invocations \
+curl -X POST http://<mlflow-ip>:5003/invocations \
   -H "Content-Type: application/json" \
   -d '{"dataframe_records": [{"signal_strength_dbm": -65, "throughput_mbps": 75, "latency_ms": 35, "call_drop_rate_percent": 0.8, "packet_loss_percent": 0.8, "jitter_ms": 2.5}]}'
 
-# Poor Network (should return [2.0])
-curl -X POST http://ec2-13-236-153-18.ap-southeast-2.compute.amazonaws.com:5003/invocations \
-  -H "Content-Type: application/json" \
-  -d '{"dataframe_records": [{"signal_strength_dbm": -85, "throughput_mbps": 20, "latency_ms": 120, "call_drop_rate_percent": 3.0, "packet_loss_percent": 2.5, "jitter_ms": 8.0}]}'
+# Response: {"predictions": [1.0]}  (good)
 ```
 
-## 🛠️ MLflow Service Management
+## Feast Feature Store
 
-### Start Services
-```bash
-./start_mlflow.sh
-```
-**Features:**
-- Stops existing services before starting new ones
-- Starts MLflow tracking server on port 5002
-- Starts model server on port 5003
-- Automatically tests model predictions
-- Provides management commands
-
-### Stop Services
-```bash
-./stop_mlflow.sh
-```
-**Features:**
-- Stops MLflow tracking server (port 5002)
-- Stops model server (port 5003)
-- Cleans up PID files
-- Force kills if necessary
-
-### Service Management
-```bash
-# Enable auto-start on boot
-sudo systemctl enable mlflow-services.service
-
-# Start service
-sudo systemctl start mlflow-services.service
-
-# Check status
-sudo systemctl status mlflow-services.service
-
-# Stop service
-sudo systemctl stop mlflow-services.service
-```
-
-## 📊 MLflow Integration
-
-### Endpoints
-- **MLflow UI**: http://ec2-13-236-153-18.ap-southeast-2.compute.amazonaws.com:5002/
-- **Model API**: http://ec2-13-236-153-18.ap-southeast-2.compute.amazonaws.com:5003/
-
-### Features
-- **Tracking Server**: Experiment tracking and model registry
-- **Model Registry**: Versioned model management
-- **Model Serving**: REST API for predictions
-- **Artifacts**: Model artifacts and metadata storage
-
-## 🧪 Testing
-
-### Comprehensive Testing
-```bash
-python test_model_predictions.py
-```
-
-**Test Coverage:**
-- Real data from MongoDB gold tier
-- Edge cases and boundary conditions
-- Model prediction accuracy validation
-- Performance metrics analysis
-
-### Real-time Inference Testing
-```bash
-python test_realtime_inference.py
-```
-
-**Real-time Test Features:**
-- Tests Atlas trigger with live data insertion
-- Monitors MLflow model predictions in real-time
-- Validates end-to-end pipeline functionality
-- Tests different network scenarios (excellent, good, poor)
-- Automatic cleanup of test data
-
-### Automated Testing
-The startup script automatically tests the model with three scenarios:
-- **Excellent Network** → Should return `[0.0]`
-- **Good Network** → Should return `[1.0]`
-- **Poor Network** → Should return `[2.0]`
-
-## 🛠️ Technical Stack
-
-- **ML Framework**: scikit-learn (RandomForestClassifier)
-- **MLOps**: MLflow (tracking, registry, serving)
-- **Database**: MongoDB Atlas
-- **Deployment**: EC2 with MLflow model serving
-- **Language**: Python 3.13
-- **Class Balancing**: Advanced techniques for imbalanced data
-
-## 📈 Data Pipeline
-
-1. **Raw Data** → MongoDB collections
-2. **Feature Engineering** → Gold/Silver tier processing
-3. **Model Training** → MLflow experiment tracking
-4. **Model Registry** → Versioned model storage
-5. **Model Serving** → Production API endpoint
-6. **Real-time Processing** → Atlas trigger for live inference
-7. **Testing** → Comprehensive validation
-
-## 🔄 Real-time Processing
-
-### Atlas Trigger Setup
-The `atlas_trigger.js` file provides real-time network health predictions:
-
-**Trigger Configuration:**
-- **Collection**: `incoming_network_data` (triggers on new documents)
-- **Model Endpoint**: `http://ec2-13-236-153-18.ap-southeast-2.compute.amazonaws.com:5003/invocations`
-- **Results Collection**: `network_health_predictions`
-
-**Required Document Format:**
-```json
-{
-  "signal_strength_dbm": -65,
-  "throughput_mbps": 75,
-  "latency_ms": 35,
-  "call_drop_rate_percent": 0.8,
-  "packet_loss_percent": 0.8,
-  "jitter_ms": 2.5,
-  "imsi": "IMSI_123456",
-  "customer_id": "CUST_1234",
-  "region": "Sydney",
-  "device_type": "iPhone",
-  "cell_technology": "5G"
-}
-```
-
-**Prediction Output:**
-```json
-{
-  "network_data_id": "ObjectId",
-  "timestamp": "2024-01-01T00:00:00Z",
-  "input_features": { /* network metrics */ },
-  "prediction": {
-    "encoded": 1,
-    "label": "good"
-  },
-  "metadata": { /* customer/device info */ }
-}
-```
-
-## 🔍 Monitoring & Troubleshooting
-
-### Check Service Status
-```bash
-lsof -i :5002  # MLflow UI
-lsof -i :5003  # Model API
-```
-
-### View Logs
-```bash
-tail -f /home/ubuntu/mlflow_server.log
-tail -f /home/ubuntu/model_server.log
-```
-
-### Restart Services
-```bash
-./stop_mlflow.sh
-./start_mlflow.sh
-```
-
-### Monitoring
-- **MLflow UI**: Model performance and experiment tracking
-- **Model Metrics**: Accuracy, precision, recall, F1-score
-- **Data Quality**: Automated data validation and cleaning
-- **Model Drift**: Monitoring for model performance degradation
-
-## 📝 Key Features
-
-- ✅ **Production-Ready**: Streamlined deployment with health checks
-- ✅ **Comprehensive Testing**: Real data validation and edge case testing
-- ✅ **Automated Deployment**: One-command startup with automatic testing
-- ✅ **Class Balancing**: Advanced techniques for imbalanced network data
-- ✅ **Version Control**: MLflow model registry with versioning
-- ✅ **Monitoring**: Complete observability with logs and metrics
-- ✅ **Documentation**: Comprehensive guides and examples
-
-## 🔄 Real-time Streaming with Confluent Cloud
-
-### **Kafka Integration**
-The project now supports real-time streaming using Confluent Cloud Kafka:
+Demonstrates the MongoDB online store integration for real-time feature serving:
 
 ```bash
-# Test streaming pipeline
-python3 test_realtime_inference_kafka.py
+cd feast-feature-store
+pip install -r requirements.txt
+python materialize.py  # Push features + demo retrieval
 ```
 
-### **Streaming Architecture**
+Features are materialized from `windowed_network_metrics` into the Feast online store (backed by MongoDB), enabling low-latency feature retrieval at inference time.
+
+## Atlas Trigger Setup (Manual)
+
+1. Go to Atlas > App Services > Create Application
+2. Create a Database Trigger:
+   - Collection: `ods_demo_db.windowed_network_metrics`
+   - Operation: Insert
+   - Full Document: enabled
+3. Paste `atlas-trigger/trigger_function.js` as the function
+4. Create a Value named `MLFLOW_ENDPOINT` with `http://<mlflow-ip>:5003/invocations`
+
+## MongoDB Collections
+
+| Collection | Type | Purpose |
+|------------|------|---------|
+| `windowed_network_metrics` | Time series | Flink-produced 5-min window aggregates |
+| `network_health_predictions` | Standard | ML predictions from Atlas Trigger |
+| `feast_online_features` | Standard | Feast online store |
+| `training_windowed_metrics` | Standard | Synthetic training data |
+| `customers` | Standard | Reference data (optional) |
+| `cells` | Standard | Cell tower reference data (optional) |
+
+## ODS Functional Requirements Demonstrated
+
+- **FR-3**: Real-time and near-real-time data ingestion (Kafka + Flink streaming)
+- **FR-5**: Schema-flexible data storage (MongoDB document model)
+- **FR-9**: API-based data access (MLflow REST, Atlas Data API)
+- **FR-11**: Operational feature enablement (Feast + windowed aggregates)
+- **FR-12**: Integration with operational workflows (anomaly detection pipeline)
+- **FR-14**: Separation of operational and historical scope (windowed ODS vs raw archive)
+
+## Troubleshooting
+
+```bash
+# Check if generator is producing
+ssh -i $SSH_KEY_PATH ubuntu@<generator-ip> "tail -5 /var/log/generator.log"
+
+# Check Flink job
+ssh -i $SSH_KEY_PATH ubuntu@<flink-ip> "tail -5 /var/log/flink-job.log"
+
+# Check MLflow serving
+curl http://<mlflow-ip>:5003/health
+
+# Check MongoDB for data
+# Use mongosh or Atlas UI to query:
+#   db.windowed_network_metrics.countDocuments()
+#   db.network_health_predictions.find().sort({timestamp: -1}).limit(5)
 ```
-Network Data → Confluent Cloud Kafka → Stream Processor → MongoDB → Atlas Trigger → MLflow Model → Predictions
-```
-
-### **Kafka Configuration**
-- **Topic**: `network_telemetry`
-- **Bootstrap Server**: `pkc-oxqxx9.us-east-1.aws.confluent.cloud:9092`
-- **Security**: SASL_SSL with API key authentication
-- **Stream Processor**: Consumes from Kafka and forwards to MongoDB
-
-### **Streaming Benefits**
-- ✅ **Real-time Processing**: Sub-second latency for network health predictions
-- ✅ **Scalability**: Handle high-volume network data streams
-- ✅ **Reliability**: Kafka's durability and fault tolerance
-- ✅ **Decoupling**: Loose coupling between data producers and ML processing
-- ✅ **Monitoring**: Full observability of the streaming pipeline
-
-## 🎯 Project Benefits
-
-- **Reduced Complexity**: Streamlined from 9+ scripts to 4 core scripts
-- **Eliminated Redundancy**: Removed duplicate and conflicting scripts
-- **Improved Maintainability**: Clear documentation and structure
-- **Production-Ready**: Tested and validated deployment process
-- **Clean Architecture**: Focused on essential functionality
-- **Streaming Ready**: Real-time processing with Confluent Cloud Kafka
-
----
-
-**Ready for production deployment with comprehensive testing, monitoring, and real-time streaming!** 🚀

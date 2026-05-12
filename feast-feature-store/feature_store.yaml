@@ -1,0 +1,14 @@
+project: telco_ods
+registry: registry.db
+provider: local
+
+online_store:
+  type: mongodb
+  connection_string: ${MONGODB_URI}
+  database: ods_demo_db
+  collection: feast_online_features
+
+offline_store:
+  type: file
+
+entity_key_serialization_version: 2

@@ -1,0 +1,67 @@
+{
+  "title": "Telco ODS - Autonomous Network Health",
+  "description": "Real-time network health monitoring powered by MongoDB Atlas, Apache Flink, and MLflow",
+  "datasource": {
+    "database": "ods_demo_db",
+    "collections": ["network_health_predictions", "windowed_network_metrics"]
+  },
+  "charts": [
+    {
+      "title": "Network Health Distribution",
+      "type": "donut",
+      "collection": "network_health_predictions",
+      "field": "prediction.label",
+      "description": "Current distribution of network health predictions across all cell towers"
+    },
+    {
+      "title": "Anomaly Rate Over Time",
+      "type": "line",
+      "collection": "network_health_predictions",
+      "x_axis": "timestamp",
+      "y_axis": "count where prediction.label = 'poor'",
+      "group_by": "region",
+      "description": "Number of 'poor' health predictions per 5-minute window by region"
+    },
+    {
+      "title": "Regional Health Heatmap",
+      "type": "heatmap",
+      "collection": "network_health_predictions",
+      "x_axis": "region",
+      "y_axis": "prediction.label",
+      "value": "count",
+      "description": "Network health status breakdown by Australian region"
+    },
+    {
+      "title": "Signal Strength vs Latency",
+      "type": "scatter",
+      "collection": "windowed_network_metrics",
+      "x_axis": "signal_strength_dbm.avg",
+      "y_axis": "latency_ms.avg",
+      "color_by": "region",
+      "description": "Correlation between average signal strength and latency per window"
+    },
+    {
+      "title": "Events Processed (Throughput)",
+      "type": "number",
+      "collection": "windowed_network_metrics",
+      "aggregation": "sum of event_count in last 5 minutes",
+      "description": "Total telemetry events processed in the latest window"
+    },
+    {
+      "title": "Predictions Timeline",
+      "type": "stacked-area",
+      "collection": "network_health_predictions",
+      "x_axis": "timestamp",
+      "y_axis": "count",
+      "stack_by": "prediction.label",
+      "description": "Prediction volume over time, stacked by health category"
+    }
+  ],
+  "filters": [
+    {"field": "region", "type": "dropdown"},
+    {"field": "cell_id", "type": "dropdown"},
+    {"field": "timestamp", "type": "date-range"}
+  ],
+  "refresh_interval_seconds": 10,
+  "notes": "Configure this dashboard in Atlas Charts UI. Use Change Streams for real-time updates. Enable auto-refresh at 10s interval."
+}
