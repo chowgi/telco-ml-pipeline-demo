@@ -23,6 +23,18 @@ for cmd in aws ssh scp; do
 done
 echo "  All prerequisites found."
 
+# Auto-detect public IP for SSH security group rules
+if [ -z "$ALLOWED_SSH_CIDR" ]; then
+  MY_IP=$(curl -s --max-time 5 https://checkip.amazonaws.com)
+  if [ -n "$MY_IP" ]; then
+    ALLOWED_SSH_CIDR="${MY_IP}/32"
+    echo "  Detected public IP: $MY_IP (using ${ALLOWED_SSH_CIDR} for SSH)"
+  else
+    echo "  Warning: Could not detect public IP. Set ALLOWED_SSH_CIDR manually."
+    exit 1
+  fi
+fi
+
 # Check for pre-baked AMIs (created by create-amis.sh)
 echo ""
 echo "  Checking for pre-baked AMIs..."
@@ -73,7 +85,7 @@ echo "  SSH key:  $SSH_KEY_PATH"
 echo ""
 echo "[2/8] Deploying CloudFormation stack..."
 
-CFN_PARAMS="KeyPairName=$KEY_PAIR_NAME AllowedSSHCidr=${ALLOWED_SSH_CIDR:-0.0.0.0/0}"
+CFN_PARAMS="KeyPairName=$KEY_PAIR_NAME AllowedSSHCidr=$ALLOWED_SSH_CIDR"
 
 if [ "$USE_CUSTOM_AMIS" = true ]; then
   CFN_PARAMS="$CFN_PARAMS KafkaAMI=$KAFKA_AMI FlinkAMI=$FLINK_AMI MLflowAMI=$MLFLOW_AMI GeneratorAMI=$GENERATOR_AMI"
