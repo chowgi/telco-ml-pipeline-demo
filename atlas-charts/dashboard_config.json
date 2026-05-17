@@ -1,67 +1,108 @@
 {
   "title": "Telco ODS - Autonomous Network Health",
-  "description": "Real-time network health monitoring powered by MongoDB Atlas, Apache Flink, and MLflow",
+  "description": "Real-time network health monitoring: MongoDB Atlas ODS + ML inference pipeline",
   "datasource": {
     "database": "ods_demo_db",
-    "collections": ["network_health_predictions", "windowed_network_metrics"]
+    "cluster": "DemoCluster"
   },
+  "setup_instructions": "Import these chart definitions manually in Atlas Charts UI. Charts > Dashboards > Add Dashboard, then add each chart below.",
   "charts": [
     {
-      "title": "Network Health Distribution",
-      "type": "donut",
+      "title": "Network Health Predictions (Live)",
+      "type": "Donut / Ring",
       "collection": "network_health_predictions",
-      "field": "prediction.label",
-      "description": "Current distribution of network health predictions across all cell towers"
+      "encoding": {
+        "label": "prediction.label",
+        "arc": "COUNT"
+      },
+      "colors": {
+        "excellent": "#2ECC71",
+        "good": "#F39C12",
+        "poor": "#E74C3C"
+      },
+      "position": "top-left",
+      "notes": "Shows live distribution of ML predictions. Should show ~67% excellent, ~28% good, ~5% poor with default anomaly rate."
     },
     {
-      "title": "Anomaly Rate Over Time",
-      "type": "line",
+      "title": "Anomalies by Region (Time Series)",
+      "type": "Line / Area",
       "collection": "network_health_predictions",
-      "x_axis": "timestamp",
-      "y_axis": "count where prediction.label = 'poor'",
-      "group_by": "region",
-      "description": "Number of 'poor' health predictions per 5-minute window by region"
+      "encoding": {
+        "x": "window_end (continuous, binned by 5 min)",
+        "y": "COUNT (filter: prediction.label = 'poor')",
+        "color": "region"
+      },
+      "position": "top-right",
+      "notes": "Shows 'poor' predictions over time grouped by region. Demonstrates real-time anomaly detection across the network."
     },
     {
-      "title": "Regional Health Heatmap",
-      "type": "heatmap",
-      "collection": "network_health_predictions",
-      "x_axis": "region",
-      "y_axis": "prediction.label",
-      "value": "count",
-      "description": "Network health status breakdown by Australian region"
+      "title": "Events Processed per Window",
+      "type": "Number / KPI",
+      "collection": "windowed_network_metrics",
+      "encoding": {
+        "value": "SUM(event_count)",
+        "filter": "window_end in last 10 minutes"
+      },
+      "position": "middle-left",
+      "notes": "Total telemetry events ingested in the latest windows. Should show ~10M+ per 5-min window (50 cells × ~140k events each)."
     },
     {
       "title": "Signal Strength vs Latency",
-      "type": "scatter",
+      "type": "Scatter",
       "collection": "windowed_network_metrics",
-      "x_axis": "signal_strength_dbm.avg",
-      "y_axis": "latency_ms.avg",
-      "color_by": "region",
-      "description": "Correlation between average signal strength and latency per window"
+      "encoding": {
+        "x": "signal_strength_dbm.avg",
+        "y": "latency_ms.avg",
+        "color": "region",
+        "detail": "cell_id"
+      },
+      "position": "middle-right",
+      "notes": "Shows correlation between signal quality and latency. Poor cells cluster in bottom-left (weak signal, high latency)."
     },
     {
-      "title": "Events Processed (Throughput)",
-      "type": "number",
-      "collection": "windowed_network_metrics",
-      "aggregation": "sum of event_count in last 5 minutes",
-      "description": "Total telemetry events processed in the latest window"
-    },
-    {
-      "title": "Predictions Timeline",
-      "type": "stacked-area",
+      "title": "Cell Tower Health Map",
+      "type": "Grouped Bar / Heatmap",
       "collection": "network_health_predictions",
-      "x_axis": "timestamp",
-      "y_axis": "count",
-      "stack_by": "prediction.label",
-      "description": "Prediction volume over time, stacked by health category"
+      "encoding": {
+        "x": "region",
+        "y": "COUNT",
+        "color": "prediction.label"
+      },
+      "filter": "window_end in last 30 minutes",
+      "position": "bottom-left",
+      "notes": "Regional breakdown of predictions. Stacked bar shows health distribution per city."
+    },
+    {
+      "title": "Prediction Throughput (Stacked Area)",
+      "type": "Stacked Area",
+      "collection": "network_health_predictions",
+      "encoding": {
+        "x": "timestamp (continuous, 5 min bins)",
+        "y": "COUNT",
+        "color": "prediction.label"
+      },
+      "position": "bottom-right",
+      "notes": "Volume of predictions over time. Shows the pipeline is continuously producing results."
     }
   ],
+  "auto_refresh": {
+    "enabled": true,
+    "interval_seconds": 10
+  },
   "filters": [
-    {"field": "region", "type": "dropdown"},
-    {"field": "cell_id", "type": "dropdown"},
-    {"field": "timestamp", "type": "date-range"}
-  ],
-  "refresh_interval_seconds": 10,
-  "notes": "Configure this dashboard in Atlas Charts UI. Use Change Streams for real-time updates. Enable auto-refresh at 10s interval."
+    {
+      "field": "region",
+      "type": "dropdown",
+      "values": ["Sydney", "Melbourne", "Brisbane", "Perth", "Adelaide"]
+    },
+    {
+      "field": "cell_id",
+      "type": "dropdown"
+    },
+    {
+      "field": "window_end",
+      "type": "date range",
+      "default": "last 1 hour"
+    }
+  ]
 }
