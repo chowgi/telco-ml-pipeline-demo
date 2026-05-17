@@ -79,7 +79,7 @@ AUTH_RESPONSE=$(curl -s -X POST "${APP_SERVICES_BASE}/auth/providers/mongodb-clo
   -H "Content-Type: application/json" \
   -d "{
     \"username\": \"${ATLAS_PUBLIC_KEY}\",
-    \"password\": \"${ATLAS_PRIVATE_KEY}\"
+    \"apiKey\": \"${ATLAS_PRIVATE_KEY}\"
   }")
 
 ACCESS_TOKEN=$(echo "$AUTH_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
@@ -133,6 +133,22 @@ else
 fi
 
 APP_BASE="${APP_SERVICES_BASE}/groups/${ATLAS_PROJECT_ID}/apps/${APP_ID}"
+
+# Get the data source service ID (needed for trigger config)
+SERVICE_ID=$(curl -s -H "$AUTH_HEADER" "${APP_BASE}/services" | python3 -c "
+import sys, json
+services = json.load(sys.stdin)
+for s in services:
+    if s.get('type') == 'mongodb-atlas':
+        print(s['_id'])
+        break
+" 2>/dev/null)
+
+if [ -z "$SERVICE_ID" ]; then
+  echo "  Error: Could not find mongodb-atlas data source service"
+  exit 1
+fi
+echo "  Data source service: $SERVICE_ID"
 
 # Step 3: Create the MLFLOW_ENDPOINT value
 echo "[3/5] Creating MLFLOW_ENDPOINT value..."
@@ -224,7 +240,7 @@ TRIGGER_CONFIG="{
     \"operation_types\": [\"INSERT\"],
     \"database\": \"ods_demo_db\",
     \"collection\": \"windowed_network_metrics\",
-    \"service_id\": \"\",
+    \"service_id\": \"${SERVICE_ID}\",
     \"match\": {},
     \"full_document\": true,
     \"full_document_before_change\": false,
