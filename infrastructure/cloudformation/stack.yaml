@@ -315,6 +315,42 @@ Resources:
           set -e
           exec > /var/log/mlflow-setup.log 2>&1
 
+          # Always update env with current IPs (handles AMI redeploy)
+          mkdir -p /opt/mlflow
+          cat > /opt/mlflow/.env << ENVEOF
+          MONGODB_URI=${MongoDBUri}
+          MLFLOW_TRACKING_URI=http://0.0.0.0:5002
+          ENVEOF
+
+          # Write dashboard config with current private IPs
+          mkdir -p /opt/dashboard
+          cat > /opt/dashboard/env.sh << DASHEOF
+          export MONGODB_URI="${MongoDBUri}"
+          export SSH_KEY=/opt/dashboard/bennyk_aws_key.pem
+          export GENERATOR_IP=${GeneratorInstance.PrivateIp}
+          export FLINK_IP=${FlinkInstance.PrivateIp}
+          DASHEOF
+          chown -R ubuntu:ubuntu /opt/dashboard
+
+          # Skip install if already set up (AMI-based deploy)
+          if [ -f /opt/mlflow/venv/bin/mlflow ]; then
+            echo "MLflow already installed (AMI deploy) — starting services"
+            systemctl start mlflow-tracking 2>/dev/null || true
+
+            # Start MLflow model serving
+            touch /var/log/mlflow-serve.log
+            chown ubuntu:ubuntu /var/log/mlflow-serve.log
+            su - ubuntu -c "cd /opt/mlflow && source venv/bin/activate && export MLFLOW_TRACKING_URI=http://localhost:5002 && nohup mlflow models serve -m 'models:/telco_ods_network_health_classifier/1' --host 0.0.0.0 --port 5003 --no-conda >> /var/log/mlflow-serve.log 2>&1 &"
+
+            # Start dashboard
+            touch /var/log/dashboard.log
+            chown ubuntu:ubuntu /var/log/dashboard.log
+            su - ubuntu -c "cd /opt/dashboard && source /opt/dashboard/env.sh && nohup /opt/mlflow/venv/bin/python app.py >> /var/log/dashboard.log 2>&1 &"
+
+            echo "MLFLOW_READY" > /tmp/mlflow-status
+            exit 0
+          fi
+
           apt-get update
           apt-get install -y python3-pip python3-venv
 
@@ -323,12 +359,7 @@ Resources:
 
           python3 -m venv venv
           source venv/bin/activate
-          pip install mlflow scikit-learn pandas numpy pymongo[srv] python-dotenv
-
-          cat > /opt/mlflow/.env << ENVEOF
-          MONGODB_URI=${MongoDBUri}
-          MLFLOW_TRACKING_URI=http://0.0.0.0:5002
-          ENVEOF
+          pip install mlflow scikit-learn pandas numpy pymongo[srv] python-dotenv flask
 
           cat > /etc/systemd/system/mlflow-tracking.service << SVCEOF
           [Unit]
@@ -373,6 +404,25 @@ Resources:
           set -e
           exec > /var/log/flink-setup.log 2>&1
 
+          # Always update config with current Kafka IP (handles AMI redeploy)
+          mkdir -p /opt/flink-job
+          cat > /opt/flink-job-config.env << CFGEOF
+          KAFKA_BROKER=${KafkaInstance.PrivateIp}:9092
+          KAFKA_TOPIC=telco-raw-telemetry
+          MONGODB_URI=${MongoDBUri}
+          MONGODB_DB=ods_demo_db
+          MONGODB_COLLECTION=windowed_network_metrics
+          CFGEOF
+          chown ubuntu:ubuntu /opt/flink-job-config.env
+
+          # Skip install if already set up (AMI-based deploy)
+          if [ -f /opt/flink/bin/flink ]; then
+            echo "Flink already installed (AMI deploy) — starting cluster"
+            systemctl start flink 2>/dev/null || /opt/flink/bin/start-cluster.sh
+            echo "FLINK_READY" > /tmp/flink-status
+            exit 0
+          fi
+
           apt-get update
           apt-get install -y default-jdk python3-pip python3-venv wget
 
@@ -408,19 +458,9 @@ Resources:
           source /opt/flink-env/bin/activate
           pip install apache-flink==1.18.1 pymongo[srv]
 
-          # Job config
-          mkdir -p /opt/flink-job
           chown -R ubuntu:ubuntu /opt/flink-job
 
-          cat > /opt/flink-job-config.env << CFGEOF
-          KAFKA_BROKER=${KafkaInstance.PrivateIp}:9092
-          KAFKA_TOPIC=telco-raw-telemetry
-          MONGODB_URI=${MongoDBUri}
-          MONGODB_DB=ods_demo_db
-          MONGODB_COLLECTION=windowed_network_metrics
-          CFGEOF
-
-          # Start Flink cluster
+          # Flink systemd service
           cat > /etc/systemd/system/flink.service << SVCEOF
           [Unit]
           Description=Apache Flink Cluster
@@ -469,21 +509,30 @@ Resources:
           set -e
           exec > /var/log/generator-setup.log 2>&1
 
+          # Always update Kafka IP (handles AMI redeploy)
+          mkdir -p /opt/telco-generator
+          cat > /opt/telco-generator/env.sh << ENVEOF
+          export KAFKA_BROKER=${KafkaInstance.PrivateIp}:9092
+          export KAFKA_TOPIC=telco-raw-telemetry
+          ENVEOF
+          chown ubuntu:ubuntu /opt/telco-generator/env.sh
+
+          # Skip install if already set up (AMI-based deploy)
+          if [ -f /opt/telco-generator/venv/bin/python ]; then
+            echo "Generator already installed (AMI deploy)"
+            echo "GENERATOR_READY" > /tmp/generator-status
+            exit 0
+          fi
+
           apt-get update
           apt-get install -y python3-pip python3-venv
 
-          mkdir -p /opt/telco-generator
           chown -R ubuntu:ubuntu /opt/telco-generator
           cd /opt/telco-generator
 
           python3 -m venv venv
           source venv/bin/activate
           pip install confluent-kafka numpy
-
-          cat > /opt/telco-generator/env.sh << ENVEOF
-          export KAFKA_BROKER=${KafkaInstance.PrivateIp}:9092
-          export KAFKA_TOPIC=telco-raw-telemetry
-          ENVEOF
 
           touch /var/log/generator.log
           chown ubuntu:ubuntu /var/log/generator.log
@@ -506,9 +555,17 @@ Outputs:
     Value: !GetAtt GeneratorInstance.PublicIp
     Description: Data generator public IP
 
+  GeneratorPrivateIP:
+    Value: !GetAtt GeneratorInstance.PrivateIp
+    Description: Data generator private IP
+
   FlinkPublicIP:
     Value: !GetAtt FlinkInstance.PublicIp
     Description: Flink public IP
+
+  FlinkPrivateIP:
+    Value: !GetAtt FlinkInstance.PrivateIp
+    Description: Flink private IP
 
   FlinkWebUI:
     Value: !Sub http://${FlinkInstance.PublicIp}:8081
