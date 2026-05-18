@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telco ODS - Autonomous Network Health</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f1419;
+            color: #e7e9ea;
+            overflow-x: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #1a1f2e 0%, #0d1117 100%);
+            border-bottom: 1px solid #30363d;
+            padding: 16px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            color: #58a6ff;
+        }
+        .header .subtitle {
+            font-size: 13px;
+            color: #8b949e;
+            margin-top: 2px;
+        }
+        .live-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #3fb950;
+        }
+        .live-dot {
+            width: 8px;
+            height: 8px;
+            background: #3fb950;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+        .kpi-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .kpi-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }
+        .kpi-value {
+            font-size: 36px;
+            font-weight: 700;
+            color: #58a6ff;
+        }
+        .kpi-value.excellent { color: #3fb950; }
+        .kpi-value.poor { color: #f85149; }
+        .kpi-value.good { color: #d29922; }
+        .kpi-label {
+            font-size: 12px;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 4px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+        .grid-equal {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .card h3 {
+            font-size: 14px;
+            font-weight: 600;
+            color: #c9d1d9;
+            margin-bottom: 16px;
+        }
+        .chart-container {
+            position: relative;
+            height: 250px;
+        }
+        .feed {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .feed-item {
+            display: flex;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #21262d;
+            font-size: 13px;
+        }
+        .feed-item:last-child { border-bottom: none; }
+        .feed-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-right: 10px;
+            min-width: 70px;
+            text-align: center;
+        }
+        .feed-badge.excellent { background: #0d3520; color: #3fb950; }
+        .feed-badge.good { background: #3d2e00; color: #d29922; }
+        .feed-badge.poor { background: #3d1214; color: #f85149; }
+        .feed-cell { color: #c9d1d9; flex: 1; }
+        .feed-region { color: #8b949e; width: 90px; }
+        .feed-time { color: #484f58; font-size: 11px; width: 60px; text-align: right; }
+        .architecture {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        .architecture h3 {
+            font-size: 14px;
+            font-weight: 600;
+            color: #c9d1d9;
+            margin-bottom: 16px;
+        }
+        .arch-diagram {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            color: #8b949e;
+            background: #0d1117;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            white-space: pre;
+        }
+        .arch-diagram .highlight { color: #58a6ff; font-weight: 600; }
+        .arch-diagram .green { color: #3fb950; }
+        .arch-diagram .orange { color: #d29922; }
+        .arch-diagram .red { color: #f85149; }
+        .tech-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 16px;
+        }
+        .pill {
+            padding: 4px 12px;
+            border-radius: 16px;
+            font-size: 11px;
+            font-weight: 500;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+        }
+        .pill.atlas { border-color: #3fb950; color: #3fb950; }
+        .pill.kafka { border-color: #58a6ff; color: #58a6ff; }
+        .pill.ml { border-color: #d29922; color: #d29922; }
+        .cell-grid {
+            display: grid;
+            grid-template-columns: repeat(10, 1fr);
+            gap: 4px;
+        }
+        .cell-dot {
+            width: 100%;
+            aspect-ratio: 1;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 8px;
+            color: rgba(255,255,255,0.7);
+            cursor: default;
+            transition: transform 0.2s;
+        }
+        .cell-dot:hover { transform: scale(1.3); }
+        .cell-dot.excellent { background: #238636; }
+        .cell-dot.good { background: #9e6a03; }
+        .cell-dot.poor { background: #da3633; }
+        .cell-dot.unknown { background: #30363d; }
+        .tooltip {
+            position: relative;
+        }
+        .region-bar-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .region-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .region-name {
+            width: 90px;
+            font-size: 12px;
+            color: #8b949e;
+            text-align: right;
+        }
+        .region-bar {
+            flex: 1;
+            height: 24px;
+            display: flex;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .region-segment {
+            height: 100%;
+            transition: width 0.5s ease;
+        }
+        .region-segment.excellent { background: #238636; }
+        .region-segment.good { background: #9e6a03; }
+        .region-segment.poor { background: #da3633; }
+        .footer {
+            text-align: center;
+            padding: 16px;
+            font-size: 11px;
+            color: #484f58;
+            border-top: 1px solid #21262d;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>Telco ODS - Autonomous Network Health</h1>
+            <div class="subtitle">MongoDB Atlas as Operational Data Store | Real-time ML Inference Pipeline</div>
+        </div>
+        <div class="live-badge">
+            <div class="live-dot"></div>
+            <span>LIVE — refreshing every 5s</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- KPIs -->
+        <div class="kpi-row">
+            <div class="kpi-card">
+                <div class="kpi-value" id="kpi-rate">-</div>
+                <div class="kpi-label">Predictions / Minute</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value excellent" id="kpi-excellent">-</div>
+                <div class="kpi-label">Excellent</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value good" id="kpi-good">-</div>
+                <div class="kpi-label">Good</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value poor" id="kpi-poor">-</div>
+                <div class="kpi-label">Poor / Anomalous</div>
+            </div>
+        </div>
+
+        <!-- Time series + Feed -->
+        <div class="grid">
+            <div class="card">
+                <h3>Predictions Over Time (30 min)</h3>
+                <div class="chart-container">
+                    <canvas id="timeChart"></canvas>
+                </div>
+            </div>
+            <div class="card">
+                <h3>Live Prediction Feed</h3>
+                <div class="feed" id="feed"></div>
+            </div>
+        </div>
+
+        <!-- Cell health grid + Region bars -->
+        <div class="grid-equal">
+            <div class="card">
+                <h3>Cell Tower Health Map (50 towers)</h3>
+                <div class="cell-grid" id="cellGrid"></div>
+            </div>
+            <div class="card">
+                <h3>Regional Health Distribution</h3>
+                <div class="region-bar-container" id="regionBars"></div>
+            </div>
+        </div>
+
+        <!-- Architecture -->
+        <div class="architecture">
+            <h3>Pipeline Architecture</h3>
+            <div class="arch-diagram"><span class="highlight">Data Generator</span> (EC2, 17k eps)
+        |
+        | Confluent Kafka (single broker, 12 partitions)
+        v
+<span class="highlight">Stream Processor</span> (rolling 5-min stats, 30s emission per cell)
+        |
+        | pymongo insert_one (per cell, every 30s)
+        v
+<span class="green">MongoDB Atlas</span> — <span class="green">windowed_network_metrics</span> (ODS)
+        |
+        | <span class="orange">Atlas Database Trigger</span> (fires on every insert)
+        v
+<span class="orange">MLflow Model Serving</span> (RandomForest classifier)
+        |
+        | prediction written back
+        v
+<span class="green">MongoDB Atlas</span> — <span class="green">network_health_predictions</span>
+        |
+        v
+<span class="red">This Dashboard</span> (polling every 5s)</div>
+            <div class="tech-pills">
+                <span class="pill atlas">MongoDB Atlas (ODS)</span>
+                <span class="pill atlas">Atlas Triggers</span>
+                <span class="pill atlas">Change Streams</span>
+                <span class="pill kafka">Apache Kafka</span>
+                <span class="pill kafka">Confluent Python</span>
+                <span class="pill ml">MLflow</span>
+                <span class="pill ml">scikit-learn</span>
+                <span class="pill">Python Streaming</span>
+                <span class="pill">AWS EC2</span>
+            </div>
+        </div>
+
+        <!-- Description -->
+        <div class="card" style="margin-bottom: 24px;">
+            <h3>What You're Seeing</h3>
+            <p style="font-size: 13px; line-height: 1.7; color: #8b949e; margin-top: 8px;">
+                This dashboard shows a live end-to-end ML pipeline built on <strong style="color:#3fb950;">MongoDB Atlas as the Operational Data Store</strong>.
+                50 simulated cell towers generate network telemetry at 17,000+ events/second into Kafka.
+                A stream processor computes rolling statistics (avg, min, max, p95) for each tower and writes snapshots to Atlas every 30 seconds.
+                An <strong style="color:#d29922;">Atlas Database Trigger</strong> fires on every insert, calls an MLflow model to classify network health
+                (excellent / good / poor), and writes the prediction back to Atlas — all within milliseconds, zero external orchestration.
+            </p>
+            <p style="font-size: 13px; line-height: 1.7; color: #8b949e; margin-top: 12px;">
+                <strong style="color:#c9d1d9;">ODS Requirements Demonstrated:</strong>
+                Real-time ingestion (FR-3), schema flexibility with nested stats (FR-5), API-based access (FR-9),
+                ML feature enablement (FR-11), event-driven operational workflows via Triggers (FR-12),
+                operational scope with raw data in Kafka and aggregates in ODS (FR-14).
+            </p>
+        </div>
+    </div>
+
+    <div class="footer">
+        MongoDB Atlas ODS Demo | Autonomous Networks | Telstra Engineering
+    </div>
+
+    <script>
+        let timeChart;
+
+        function initCharts() {
+            const ctx = document.getElementById('timeChart').getContext('2d');
+            timeChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { label: 'Excellent', data: [], borderColor: '#3fb950', backgroundColor: 'rgba(63,185,80,0.1)', fill: true, tension: 0.3 },
+                        { label: 'Good', data: [], borderColor: '#d29922', backgroundColor: 'rgba(210,153,34,0.1)', fill: true, tension: 0.3 },
+                        { label: 'Poor', data: [], borderColor: '#f85149', backgroundColor: 'rgba(248,81,73,0.1)', fill: true, tension: 0.3 },
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { intersect: false, mode: 'index' },
+                    scales: {
+                        x: {
+                            ticks: { color: '#484f58', maxTicksLimit: 10, font: { size: 10 } },
+                            grid: { color: '#21262d' }
+                        },
+                        y: {
+                            ticks: { color: '#484f58', font: { size: 10 } },
+                            grid: { color: '#21262d' },
+                            beginAtZero: true
+                        }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#8b949e', boxWidth: 12, font: { size: 11 } } }
+                    }
+                }
+            });
+        }
+
+        function updateDashboard(data) {
+            // KPIs
+            document.getElementById('kpi-rate').textContent = data.predictions_per_minute;
+            const dist = data.distribution;
+            document.getElementById('kpi-excellent').textContent = dist.excellent || 0;
+            document.getElementById('kpi-good').textContent = dist.good || 0;
+            document.getElementById('kpi-poor').textContent = dist.poor || 0;
+
+            // Time series
+            const times = Object.keys(data.time_series).sort();
+            const labels = times.map(t => {
+                const d = new Date(t);
+                return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+            });
+            timeChart.data.labels = labels;
+            timeChart.data.datasets[0].data = times.map(t => data.time_series[t].excellent || 0);
+            timeChart.data.datasets[1].data = times.map(t => data.time_series[t].good || 0);
+            timeChart.data.datasets[2].data = times.map(t => data.time_series[t].poor || 0);
+            timeChart.update('none');
+
+            // Feed
+            const feed = document.getElementById('feed');
+            feed.innerHTML = data.recent.map(r => {
+                const label = r.prediction?.label || 'unknown';
+                const ago = Math.round((Date.now() - new Date(r.timestamp).getTime()) / 1000);
+                const agoStr = ago < 60 ? `${ago}s ago` : `${Math.round(ago/60)}m ago`;
+                return `<div class="feed-item">
+                    <span class="feed-badge ${label}">${label}</span>
+                    <span class="feed-cell">${r.cell_id}</span>
+                    <span class="feed-region">${r.region}</span>
+                    <span class="feed-time">${agoStr}</span>
+                </div>`;
+            }).join('');
+
+            // Cell grid
+            const grid = document.getElementById('cellGrid');
+            const cellMap = {};
+            data.cell_detail.forEach(c => { cellMap[c._id] = c; });
+
+            // Get latest prediction per cell from recent
+            const cellPredictions = {};
+            data.recent.forEach(r => {
+                if (!cellPredictions[r.cell_id]) {
+                    cellPredictions[r.cell_id] = r.prediction?.label || 'unknown';
+                }
+            });
+
+            let gridHtml = '';
+            for (let i = 0; i < 50; i++) {
+                const cellId = `CELL_${String(i).padStart(4, '0')}`;
+                const prediction = cellPredictions[cellId] || 'unknown';
+                const detail = cellMap[cellId];
+                const title = detail
+                    ? `${cellId} (${detail.region})\nSignal: ${detail.signal_avg?.toFixed(1)} dBm\nLatency: ${detail.latency_avg?.toFixed(1)} ms`
+                    : cellId;
+                gridHtml += `<div class="cell-dot ${prediction}" title="${title}">${i}</div>`;
+            }
+            grid.innerHTML = gridHtml;
+
+            // Region bars
+            const regions = {};
+            data.region_health.forEach(r => {
+                if (!regions[r.region]) regions[r.region] = {excellent: 0, good: 0, poor: 0};
+                regions[r.region][r.label] = r.count;
+            });
+
+            const barsDiv = document.getElementById('regionBars');
+            barsDiv.innerHTML = Object.keys(regions).sort().map(region => {
+                const r = regions[region];
+                const total = r.excellent + r.good + r.poor;
+                if (total === 0) return '';
+                const ePct = (r.excellent / total * 100).toFixed(1);
+                const gPct = (r.good / total * 100).toFixed(1);
+                const pPct = (r.poor / total * 100).toFixed(1);
+                return `<div class="region-row">
+                    <span class="region-name">${region}</span>
+                    <div class="region-bar">
+                        <div class="region-segment excellent" style="width:${ePct}%"></div>
+                        <div class="region-segment good" style="width:${gPct}%"></div>
+                        <div class="region-segment poor" style="width:${pPct}%"></div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        async function fetchAndUpdate() {
+            try {
+                const resp = await fetch('/api/stats');
+                const data = await resp.json();
+                updateDashboard(data);
+            } catch (e) {
+                console.error('Fetch error:', e);
+            }
+        }
+
+        initCharts();
+        fetchAndUpdate();
+        setInterval(fetchAndUpdate, 5000);
+    </script>
+</body>
+</html>
