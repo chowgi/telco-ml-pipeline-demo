@@ -8,6 +8,7 @@ Includes Start/Stop Demo controls that trigger pipeline operations.
 import os
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone, timedelta
 from flask import Flask, render_template, jsonify, request
 from pymongo import MongoClient
@@ -149,12 +150,20 @@ def start_demo():
 
             # Start Flink job
             if FLINK_IP:
-                ok, out = run_ssh(FLINK_IP, (
+                # Cancel any existing jobs
+                run_ssh(FLINK_IP, (
                     "/opt/flink/bin/flink list -r 2>/dev/null | grep -oP '[0-9a-f]{32}' | "
-                    "while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done; "
+                    "while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done"
+                ))
+                # Restart cluster cleanly
+                run_ssh(FLINK_IP, (
+                    "/opt/flink/bin/stop-cluster.sh 2>/dev/null; "
                     "sleep 2; "
-                    "/opt/flink/bin/start-cluster.sh 2>/dev/null; "
-                    "sleep 3; "
+                    "/opt/flink/bin/start-cluster.sh 2>/dev/null"
+                ))
+                # Wait for cluster to be ready, then submit
+                time.sleep(5)
+                ok, out = run_ssh(FLINK_IP, (
                     "source /opt/flink-env/bin/activate && "
                     "export $(cat /opt/flink-job-config.env | xargs) && "
                     "/opt/flink/bin/flink run -py /opt/flink-job/flink_job.py "
