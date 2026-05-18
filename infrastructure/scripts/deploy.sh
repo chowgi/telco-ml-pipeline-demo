@@ -1,11 +1,9 @@
 #!/bin/bash
 # Deploy the full Telco ODS streaming ML pipeline demo.
+# All instances bootstrap from scratch via CloudFormation userdata.
+# Flink binary pulled from S3 (fast, in-region) with Apache fallback.
 #
-# Two modes:
-#   - AMI deploy (default): Flink/MLflow/Generator from pre-baked AMIs, Kafka from userdata.
-#     Instances boot with code pre-installed; userdata just updates configs (Kafka IP, etc).
-#     Total time: ~90s (waiting for Kafka to bootstrap).
-#   - Fresh deploy (no AMIs found): Full install via userdata. Slower (~5 min).
+# Total deploy time: ~5 min (Flink PyFlink pip install is the bottleneck).
 #
 # Prerequisites:
 #   - .env file in project root (ATLAS_PUBLIC_KEY, ATLAS_PRIVATE_KEY, MONGODB_URI)
@@ -21,7 +19,7 @@ REGION="ap-southeast-2"
 
 echo "============================================================"
 echo "Telco ODS - Autonomous Networks ML Pipeline Demo"
-echo "  Apache Flink (PyFlink 1.18) | ~1k eps | 30s emission"
+echo "  Full bootstrap deploy (no AMIs)"
 echo "============================================================"
 echo ""
 
@@ -34,7 +32,7 @@ else
 fi
 
 # Prerequisites
-for cmd in aws ssh; do
+for cmd in aws ssh scp; do
   if ! command -v $cmd &> /dev/null; then
     echo "Error: $cmd is required but not installed."
     exit 1
@@ -54,38 +52,18 @@ SSH_OPTS="-o ConnectTimeout=15 -o ServerAliveInterval=5 -o StrictHostKeyChecking
 MY_IP=$(curl -s --max-time 5 https://checkip.amazonaws.com)
 ALLOWED_SSH_CIDR="${MY_IP}/32"
 echo "  SSH access from: $MY_IP"
-
-# Check for pre-baked AMIs
-echo ""
-echo "[1/5] Checking for pre-baked AMIs..."
-FLINK_AMI=$(aws ec2 describe-images --owners self --filters "Name=tag:TelcoODS,Values=flink" "Name=tag:Latest,Values=true" --region "$REGION" --query 'Images[0].ImageId' --output text 2>/dev/null || echo "None")
-MLFLOW_AMI=$(aws ec2 describe-images --owners self --filters "Name=tag:TelcoODS,Values=mlflow" "Name=tag:Latest,Values=true" --region "$REGION" --query 'Images[0].ImageId' --output text 2>/dev/null || echo "None")
-GENERATOR_AMI=$(aws ec2 describe-images --owners self --filters "Name=tag:TelcoODS,Values=generator" "Name=tag:Latest,Values=true" --region "$REGION" --query 'Images[0].ImageId' --output text 2>/dev/null || echo "None")
-
-CFN_PARAMS="KeyPairName=$KEY_PAIR_NAME AllowedSSHCidr=$ALLOWED_SSH_CIDR"
-
-if [ "$FLINK_AMI" != "None" ] && [ "$FLINK_AMI" != "null" ] && [ -n "$FLINK_AMI" ]; then
-  echo "  AMI deploy (fast path):"
-  echo "    Flink:     $FLINK_AMI"
-  echo "    MLflow:    $MLFLOW_AMI"
-  echo "    Generator: $GENERATOR_AMI"
-  echo "    Kafka:     (bootstrapped from userdata — fast via Confluent APT)"
-  CFN_PARAMS="$CFN_PARAMS FlinkAMI=$FLINK_AMI MLflowAMI=$MLFLOW_AMI GeneratorAMI=$GENERATOR_AMI"
-  USE_AMIS=true
-else
-  echo "  No AMIs found — fresh install (will take ~5 min)."
-  echo "  After deploy, run: ./infrastructure/scripts/create-amis.sh"
-  USE_AMIS=false
-fi
+echo "  Key pair: $KEY_PAIR_NAME"
 
 # Deploy CloudFormation
 echo ""
-echo "[2/5] Deploying CloudFormation stack..."
+echo "[1/5] Deploying CloudFormation stack..."
 aws cloudformation deploy \
   --template-file "$CFN_TEMPLATE" \
   --stack-name "$STACK_NAME" \
   --region "$REGION" \
-  --parameter-overrides $CFN_PARAMS \
+  --parameter-overrides \
+    KeyPairName=$KEY_PAIR_NAME \
+    AllowedSSHCidr=$ALLOWED_SSH_CIDR \
   --capabilities CAPABILITY_IAM \
   --no-fail-on-empty-changeset
 
@@ -93,7 +71,7 @@ echo "  Stack created."
 
 # Get outputs
 echo ""
-echo "[3/5] Retrieving instance IPs..."
+echo "[2/5] Retrieving instance IPs..."
 get_output() {
   aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" \
     --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
@@ -112,45 +90,147 @@ echo "  Generator: $GENERATOR_IP (private: $GENERATOR_PRIVATE_IP)"
 echo "  Flink:     $FLINK_IP (private: $FLINK_PRIVATE_IP)"
 echo "  MLflow:    $MLFLOW_IP"
 
-# Wait for Kafka (the bottleneck — others are instant from AMI)
+# Wait for userdata to complete on all instances
 echo ""
-echo "[4/5] Waiting for Kafka to bootstrap..."
-for i in $(seq 1 12); do
-  KAFKA_STATUS=$(ssh $SSH_OPTS ubuntu@$KAFKA_PUBLIC_IP "cat /tmp/kafka-status 2>/dev/null" 2>/dev/null || echo "")
-  if [ "$KAFKA_STATUS" = "KAFKA_READY" ]; then
-    echo "  Kafka ready!"
+echo "[3/5] Waiting for instances to bootstrap (~5 min)..."
+echo "  (Flink PyFlink install is the bottleneck)"
+
+# Poll until all instances report ready (max 8 min)
+for i in $(seq 1 32); do
+  KAFKA_OK=$(ssh $SSH_OPTS ubuntu@$KAFKA_PUBLIC_IP "cat /tmp/kafka-status 2>/dev/null" 2>/dev/null || echo "")
+  FLINK_OK=$(ssh $SSH_OPTS ubuntu@$FLINK_IP "cat /tmp/flink-status 2>/dev/null" 2>/dev/null || echo "")
+  GEN_OK=$(ssh $SSH_OPTS ubuntu@$GENERATOR_IP "cat /tmp/generator-status 2>/dev/null" 2>/dev/null || echo "")
+  MLFLOW_OK=$(ssh $SSH_OPTS ubuntu@$MLFLOW_IP "cat /tmp/mlflow-status 2>/dev/null" 2>/dev/null || echo "")
+
+  READY=0
+  [ "$KAFKA_OK" = "KAFKA_READY" ] && READY=$((READY+1))
+  [ "$FLINK_OK" = "FLINK_READY" ] && READY=$((READY+1))
+  [ "$GEN_OK" = "GENERATOR_READY" ] && READY=$((READY+1))
+  [ "$MLFLOW_OK" = "MLFLOW_READY" ] && READY=$((READY+1))
+
+  echo "  [$((i*15))s] $READY/4 ready (kafka:${KAFKA_OK:-pending} flink:${FLINK_OK:-pending} gen:${GEN_OK:-pending} mlflow:${MLFLOW_OK:-pending})"
+
+  if [ $READY -eq 4 ]; then
+    echo "  All instances ready!"
     break
   fi
-  if [ $i -eq 12 ]; then
-    echo "  Warning: Kafka not confirmed ready after 3 min. Check /var/log/kafka-setup.log"
+  if [ $i -eq 32 ]; then
+    echo "  Warning: Not all instances ready after 8 min. Check userdata logs."
   fi
   sleep 15
 done
 
-# Verify other instances
-echo "  Verifying Flink..."
-ssh $SSH_OPTS ubuntu@$FLINK_IP "cat /tmp/flink-status 2>/dev/null" 2>/dev/null || echo "  (Flink still initializing)"
-echo "  Verifying MLflow..."
-ssh $SSH_OPTS ubuntu@$MLFLOW_IP "cat /tmp/mlflow-status 2>/dev/null" 2>/dev/null || echo "  (MLflow still initializing)"
+# Upload code and configure
+echo ""
+echo "[4/5] Uploading code and configuring..."
 
-# Atlas whitelist + trigger
+# Upload Flink job
+scp $SSH_OPTS -r "$PROJECT_ROOT/flink-processor/"* ubuntu@${FLINK_IP}:/opt/flink-job/ 2>/dev/null
+ssh $SSH_OPTS ubuntu@$FLINK_IP "source /opt/flink-env/bin/activate && cd /opt/flink-job && pip install -r requirements.txt -q 2>/dev/null" 2>/dev/null
+echo "  Flink job uploaded"
+
+# Create Flink helper scripts
+ssh $SSH_OPTS ubuntu@$FLINK_IP 'cat > /opt/flink-job/restart.sh << '\''SCRIPT'\''
+#!/bin/bash
+set -e
+pkill -9 -f "org.apache.flink" || true
+pkill -9 -f "flink_job.py" || true
+sleep 2
+rm -f /opt/flink/log/*.pid 2>/dev/null || true
+/opt/flink/bin/start-cluster.sh
+sleep 5
+cd /opt/flink-job
+source /opt/flink-env/bin/activate
+export $(cat /opt/flink-job-config.env | xargs)
+/opt/flink/bin/flink run -py flink_job.py -pyexec /opt/flink-env/bin/python3 >> /var/log/flink-job.log 2>&1 &
+sleep 5
+RUNNING=$(/opt/flink/bin/flink list -r 2>/dev/null | grep -c "RUNNING" || echo "0")
+echo "Flink: $RUNNING running"
+SCRIPT
+chmod +x /opt/flink-job/restart.sh' 2>/dev/null
+
+ssh $SSH_OPTS ubuntu@$FLINK_IP 'cat > /opt/flink-job/stop.sh << '\''SCRIPT'\''
+#!/bin/bash
+pkill -9 -f "org.apache.flink" || true
+pkill -9 -f "flink_job.py" || true
+rm -f /opt/flink/log/*.pid 2>/dev/null || true
+echo "Flink stopped"
+SCRIPT
+chmod +x /opt/flink-job/stop.sh' 2>/dev/null
+echo "  Flink helper scripts created"
+
+# Upload Generator
+scp $SSH_OPTS -r "$PROJECT_ROOT/data-generator/"* ubuntu@${GENERATOR_IP}:/opt/telco-generator/ 2>/dev/null
+ssh $SSH_OPTS ubuntu@$GENERATOR_IP "cd /opt/telco-generator && source venv/bin/activate && pip install -r requirements.txt -q 2>/dev/null" 2>/dev/null
+echo "  Generator uploaded"
+
+# Create Generator start script
+ssh $SSH_OPTS ubuntu@$GENERATOR_IP 'cat > /opt/telco-generator/start.sh << '\''SCRIPT'\''
+#!/bin/bash
+pkill -f generator.py || true
+sleep 2
+cd /opt/telco-generator
+source venv/bin/activate
+source env.sh
+nohup python -u generator.py >> /var/log/generator.log 2>&1 < /dev/null &
+sleep 3
+pgrep -f generator.py > /dev/null && echo "Generator started" || echo "ERROR: Generator failed"
+SCRIPT
+chmod +x /opt/telco-generator/start.sh' 2>/dev/null
+echo "  Generator start script created"
+
+# Upload MLflow model + dashboard
+scp $SSH_OPTS -r "$PROJECT_ROOT/ml-model/"* ubuntu@${MLFLOW_IP}:/opt/mlflow/app/ 2>/dev/null
+scp $SSH_OPTS -r "$PROJECT_ROOT/dashboard/"* ubuntu@${MLFLOW_IP}:/opt/dashboard/ 2>/dev/null
+scp $SSH_OPTS "$SSH_KEY_PATH" ubuntu@${MLFLOW_IP}:/opt/dashboard/bennyk_aws_key.pem 2>/dev/null
+ssh $SSH_OPTS ubuntu@$MLFLOW_IP "chmod 400 /opt/dashboard/bennyk_aws_key.pem" 2>/dev/null
+echo "  MLflow model + dashboard uploaded"
+
+# Train model and start serving
+ssh $SSH_OPTS ubuntu@$MLFLOW_IP "
+cd /opt/mlflow/app
+source /opt/mlflow/venv/bin/activate
+export MLFLOW_TRACKING_URI=http://localhost:5002
+export MONGODB_URI='${MongoDBUri}'
+pip install -r requirements.txt -q 2>/dev/null
+python generate_training_data.py
+python train_model.py
+" 2>/dev/null
+echo "  Model trained and registered"
+
+# Start model serving
+ssh $SSH_OPTS ubuntu@$MLFLOW_IP "
+source /opt/mlflow/venv/bin/activate
+export MLFLOW_TRACKING_URI=http://localhost:5002
+nohup mlflow models serve -m 'models:/telco_ods_network_health_classifier/1' --host 0.0.0.0 --port 5003 --no-conda >> /var/log/mlflow-serve.log 2>&1 < /dev/null &
+" 2>/dev/null
+echo "  Model serving started"
+
+# Start dashboard
+ssh $SSH_OPTS ubuntu@$MLFLOW_IP "
+source /opt/dashboard/env.sh
+cd /opt/dashboard
+nohup /opt/mlflow/venv/bin/python app.py >> /var/log/dashboard.log 2>&1 < /dev/null &
+" 2>/dev/null
+echo "  Dashboard started"
+
+# Atlas setup
 echo ""
 echo "[5/5] Configuring Atlas..."
 
-# Add IPs to Atlas network access
+# Whitelist IPs
 for IP in $KAFKA_PUBLIC_IP $GENERATOR_IP $FLINK_IP $MLFLOW_IP; do
   atlas accessLists create "$IP/32" --profile bk --comment "telco-ods-demo" 2>/dev/null || true
 done
 echo "  Atlas IP whitelist updated"
 
-# Update trigger with new MLflow endpoint
+# Update trigger
 if [ -n "$ATLAS_PUBLIC_KEY" ] && [ -n "$ATLAS_PRIVATE_KEY" ]; then
   export MLFLOW_ENDPOINT="http://${MLFLOW_IP}:5003/invocations"
   echo "  Updating Atlas Trigger → $MLFLOW_ENDPOINT"
   "$PROJECT_ROOT/atlas-trigger/setup_trigger.sh" 2>&1 | grep -E "^\[|Set MLFLOW|Created|Updated|Error"
 else
   echo "  Warning: No Atlas API keys — trigger not updated."
-  echo "  Set ATLAS_PUBLIC_KEY and ATLAS_PRIVATE_KEY in .env"
 fi
 
 echo ""
@@ -161,6 +241,7 @@ echo ""
 echo "  Dashboard:   http://$MLFLOW_IP:8050"
 echo "  Flink UI:    http://$FLINK_IP:8081"
 echo "  MLflow:      http://$MLFLOW_IP:5002"
+echo "  MLflow API:  http://$MLFLOW_IP:5003/invocations"
 echo ""
 echo "  Use the dashboard 'Start Demo' button, or:"
 echo "    ./infrastructure/scripts/start_demo.sh"

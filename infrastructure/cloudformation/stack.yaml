@@ -22,31 +22,10 @@ Parameters:
     Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
     Description: Ubuntu 22.04 AMI (auto-resolved via SSM)
 
-  KafkaAMI:
+  S3ArtifactBucket:
     Type: String
-    Default: ""
-    Description: Pre-baked Kafka AMI (leave empty for fresh install)
-
-  FlinkAMI:
-    Type: String
-    Default: ""
-    Description: Pre-baked Flink AMI (leave empty for fresh install)
-
-  MLflowAMI:
-    Type: String
-    Default: ""
-    Description: Pre-baked MLflow AMI (leave empty for fresh install)
-
-  GeneratorAMI:
-    Type: String
-    Default: ""
-    Description: Pre-baked Generator AMI (leave empty for fresh install)
-
-Conditions:
-  UseCustomKafkaAMI: !Not [!Equals [!Ref KafkaAMI, ""]]
-  UseCustomFlinkAMI: !Not [!Equals [!Ref FlinkAMI, ""]]
-  UseCustomMLflowAMI: !Not [!Equals [!Ref MLflowAMI, ""]]
-  UseCustomGeneratorAMI: !Not [!Equals [!Ref GeneratorAMI, ""]]
+    Default: telco-ods-demo-artifacts-ap-southeast-2
+    Description: S3 bucket with pre-cached binaries (Flink tarball, Kafka connector)
 
 Resources:
   # --- VPC & Networking ---
@@ -118,11 +97,6 @@ Resources:
           ToPort: 9092
           CidrIp: 10.0.0.0/16
           Description: Kafka broker (VPC internal)
-        - IpProtocol: tcp
-          FromPort: 2181
-          ToPort: 2181
-          CidrIp: 10.0.0.0/16
-          Description: Zookeeper (VPC internal)
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
@@ -200,7 +174,7 @@ Resources:
   KafkaInstance:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId: !If [UseCustomKafkaAMI, !Ref KafkaAMI, !Ref UbuntuAMI]
+      ImageId: !Ref UbuntuAMI
       InstanceType: t3.xlarge
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PublicSubnet
@@ -209,7 +183,7 @@ Resources:
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs:
-            VolumeSize: 100
+            VolumeSize: 50
             VolumeType: gp3
       UserData:
         Fn::Base64: !Sub |
@@ -220,7 +194,7 @@ Resources:
           apt-get update
           apt-get install -y default-jdk wget gnupg
 
-          # Install Kafka via Confluent APT repo (fast CDN, avoids slow Apache mirrors)
+          # Install Kafka via Confluent APT repo (fast CDN)
           wget -qO - https://packages.confluent.io/deb/7.6/archive.key | gpg --dearmor -o /usr/share/keyrings/confluent.gpg
           echo "deb [signed-by=/usr/share/keyrings/confluent.gpg] https://packages.confluent.io/deb/7.6 stable main" > /etc/apt/sources.list.d/confluent.list
           apt-get update
@@ -228,7 +202,7 @@ Resources:
 
           PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
 
-          # Configure KRaft mode (no Zookeeper required)
+          # Configure KRaft mode (no Zookeeper)
           mkdir -p /var/lib/kafka/data /var/log/kafka
           chown -R ubuntu:ubuntu /var/lib/kafka /var/log/kafka
 
@@ -257,13 +231,10 @@ Resources:
           log.segment.bytes=1073741824
           KAFKAEOF
 
-          # Format KRaft storage
           CLUSTER_ID=$(kafka-storage random-uuid)
           kafka-storage format -t ${!CLUSTER_ID} -c /etc/kafka/kraft/server.properties
-
           chown -R ubuntu:ubuntu /var/lib/kafka
 
-          # Systemd service
           cat > /etc/systemd/system/kafka.service << SVCEOF
           [Unit]
           Description=Apache Kafka (KRaft)
@@ -297,8 +268,9 @@ Resources:
 
   MLflowInstance:
     Type: AWS::EC2::Instance
+    DependsOn: [FlinkInstance, GeneratorInstance]
     Properties:
-      ImageId: !If [UseCustomMLflowAMI, !Ref MLflowAMI, !Ref UbuntuAMI]
+      ImageId: !Ref UbuntuAMI
       InstanceType: t3.large
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PublicSubnet
@@ -315,64 +287,41 @@ Resources:
           set -e
           exec > /var/log/mlflow-setup.log 2>&1
 
-          # Always update env with current IPs (handles AMI redeploy)
-          mkdir -p /opt/mlflow
+          apt-get update
+          apt-get install -y python3-pip python3-venv
+
+          mkdir -p /opt/mlflow/app /opt/dashboard
+          cd /opt/mlflow
+
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install mlflow==3.12.0 scikit-learn pandas numpy "pymongo[srv]" python-dotenv flask
+
+          # Env files
           cat > /opt/mlflow/.env << ENVEOF
           MONGODB_URI=${MongoDBUri}
           MLFLOW_TRACKING_URI=http://0.0.0.0:5002
           ENVEOF
 
-          # Write dashboard config with current private IPs
-          mkdir -p /opt/dashboard
           cat > /opt/dashboard/env.sh << DASHEOF
           export MONGODB_URI="${MongoDBUri}"
           export SSH_KEY=/opt/dashboard/bennyk_aws_key.pem
           export GENERATOR_IP=${GeneratorInstance.PrivateIp}
           export FLINK_IP=${FlinkInstance.PrivateIp}
           DASHEOF
-          chown -R ubuntu:ubuntu /opt/dashboard
 
-          # Update MLflow service with public IP for DNS rebinding protection
-          PUBLIC_IP=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/public-ipv4)
-          sed -i "s|ExecStart=.*|ExecStart=/opt/mlflow/venv/bin/mlflow server --host 0.0.0.0 --port 5002 --allowed-hosts ${!PUBLIC_IP}:5002,${!PUBLIC_IP},localhost --backend-store-uri sqlite:///mlflow.db --default-artifact-root /opt/mlflow/artifacts|" /etc/systemd/system/mlflow-tracking.service 2>/dev/null || true
-          systemctl daemon-reload 2>/dev/null || true
+          chown -R ubuntu:ubuntu /opt/mlflow /opt/dashboard
 
-          # Skip install if already set up (AMI-based deploy)
-          if [ -f /opt/mlflow/venv/bin/mlflow ]; then
-            echo "MLflow already installed (AMI deploy) — starting services"
-            systemctl start mlflow-tracking 2>/dev/null || true
-
-            # Start MLflow model serving
-            touch /var/log/mlflow-serve.log
-            chown ubuntu:ubuntu /var/log/mlflow-serve.log
-            su - ubuntu -c "cd /opt/mlflow && source venv/bin/activate && export MLFLOW_TRACKING_URI=http://localhost:5002 && nohup mlflow models serve -m 'models:/telco_ods_network_health_classifier/1' --host 0.0.0.0 --port 5003 --no-conda >> /var/log/mlflow-serve.log 2>&1 &"
-
-            # Start dashboard
-            touch /var/log/dashboard.log
-            chown ubuntu:ubuntu /var/log/dashboard.log
-            su - ubuntu -c "cd /opt/dashboard && source /opt/dashboard/env.sh && nohup /opt/mlflow/venv/bin/python app.py >> /var/log/dashboard.log 2>&1 &"
-
-            echo "MLFLOW_READY" > /tmp/mlflow-status
-            exit 0
-          fi
-
-          apt-get update
-          apt-get install -y python3-pip python3-venv
-
-          mkdir -p /opt/mlflow/app
-          cd /opt/mlflow
-
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install mlflow scikit-learn pandas numpy pymongo[srv] python-dotenv flask
-
+          # MLflow tracking service (MLFLOW_ALLOWED_HOSTS=all bypasses DNS rebinding check)
           cat > /etc/systemd/system/mlflow-tracking.service << SVCEOF
           [Unit]
           Description=MLflow Tracking Server
           After=network.target
           [Service]
           Type=simple
+          User=ubuntu
           WorkingDirectory=/opt/mlflow
+          Environment=MLFLOW_ALLOWED_HOSTS=all
           ExecStart=/opt/mlflow/venv/bin/mlflow server --host 0.0.0.0 --port 5002 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /opt/mlflow/artifacts
           Restart=on-failure
           [Install]
@@ -383,6 +332,9 @@ Resources:
           systemctl enable mlflow-tracking
           systemctl start mlflow-tracking
 
+          touch /var/log/mlflow-serve.log /var/log/dashboard.log
+          chown ubuntu:ubuntu /var/log/mlflow-serve.log /var/log/dashboard.log
+
           echo "MLFLOW_READY" > /tmp/mlflow-status
       Tags:
         - Key: Name
@@ -392,12 +344,13 @@ Resources:
     Type: AWS::EC2::Instance
     DependsOn: KafkaInstance
     Properties:
-      ImageId: !If [UseCustomFlinkAMI, !Ref FlinkAMI, !Ref UbuntuAMI]
+      ImageId: !Ref UbuntuAMI
       InstanceType: c5.4xlarge
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PublicSubnet
       SecurityGroupIds:
         - !Ref PipelineSG
+      IamInstanceProfile: !Ref EC2InstanceProfile
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs:
@@ -409,7 +362,10 @@ Resources:
           set -e
           exec > /var/log/flink-setup.log 2>&1
 
-          # Always update config with current Kafka IP (handles AMI redeploy)
+          apt-get update
+          apt-get install -y default-jdk python3-pip python3-venv awscli
+
+          # Flink job config
           mkdir -p /opt/flink-job
           cat > /opt/flink-job-config.env << CFGEOF
           KAFKA_BROKER=${KafkaInstance.PrivateIp}:9092
@@ -418,31 +374,28 @@ Resources:
           MONGODB_DB=ods_demo_db
           MONGODB_COLLECTION=windowed_network_metrics
           CFGEOF
-          chown ubuntu:ubuntu /opt/flink-job-config.env
 
-          # Skip install if already set up (AMI-based deploy)
-          if [ -f /opt/flink/bin/flink ]; then
-            echo "Flink already installed (AMI deploy) — starting cluster"
-            systemctl start flink 2>/dev/null || /opt/flink/bin/start-cluster.sh
-            echo "FLINK_READY" > /tmp/flink-status
-            exit 0
-          fi
-
-          apt-get update
-          apt-get install -y default-jdk python3-pip python3-venv wget
-
-          # Install Apache Flink 1.18.1
+          # Download Flink from S3 (fast, in-region) with fallback to Apache
           FLINK_VERSION=1.18.1
-          wget -q https://archive.apache.org/dist/flink/flink-${!FLINK_VERSION}/flink-${!FLINK_VERSION}-bin-scala_2.12.tgz -O /tmp/flink.tgz
+          if aws s3 cp s3://${S3ArtifactBucket}/flink-${!FLINK_VERSION}-bin-scala_2.12.tgz /tmp/flink.tgz 2>/dev/null; then
+            echo "Downloaded Flink from S3"
+          else
+            echo "S3 not available, downloading from Apache..."
+            wget -q https://archive.apache.org/dist/flink/flink-${!FLINK_VERSION}/flink-${!FLINK_VERSION}-bin-scala_2.12.tgz -O /tmp/flink.tgz
+          fi
           tar -xzf /tmp/flink.tgz -C /opt/
           mv /opt/flink-${!FLINK_VERSION} /opt/flink
           chown -R ubuntu:ubuntu /opt/flink
           rm /tmp/flink.tgz
 
-          # Download Kafka connector JAR for Flink
-          wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.1.0-1.18/flink-sql-connector-kafka-3.1.0-1.18.jar -O /opt/flink/lib/flink-sql-connector-kafka-3.1.0-1.18.jar
+          # Kafka connector JAR
+          if aws s3 cp s3://${S3ArtifactBucket}/flink-sql-connector-kafka-3.1.0-1.18.jar /opt/flink/lib/ 2>/dev/null; then
+            echo "Downloaded Kafka connector from S3"
+          else
+            wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.1.0-1.18/flink-sql-connector-kafka-3.1.0-1.18.jar -O /opt/flink/lib/flink-sql-connector-kafka-3.1.0-1.18.jar
+          fi
 
-          # Configure Flink for standalone mode
+          # Configure Flink standalone
           cat > /opt/flink/conf/flink-conf.yaml << FLINKEOF
           jobmanager.rpc.address: localhost
           jobmanager.rpc.port: 6123
@@ -461,7 +414,7 @@ Resources:
           python3 -m venv /opt/flink-env
           chown -R ubuntu:ubuntu /opt/flink-env
           source /opt/flink-env/bin/activate
-          pip install apache-flink==1.18.1 pymongo[srv]
+          pip install apache-flink==1.18.1 "pymongo[srv]"
 
           chown -R ubuntu:ubuntu /opt/flink-job
 
@@ -497,7 +450,7 @@ Resources:
     Type: AWS::EC2::Instance
     DependsOn: KafkaInstance
     Properties:
-      ImageId: !If [UseCustomGeneratorAMI, !Ref GeneratorAMI, !Ref UbuntuAMI]
+      ImageId: !Ref UbuntuAMI
       InstanceType: c5.2xlarge
       KeyName: !Ref KeyPairName
       SubnetId: !Ref PublicSubnet
@@ -514,26 +467,17 @@ Resources:
           set -e
           exec > /var/log/generator-setup.log 2>&1
 
-          # Always update Kafka IP (handles AMI redeploy)
+          apt-get update
+          apt-get install -y python3-pip python3-venv
+
           mkdir -p /opt/telco-generator
+          chown -R ubuntu:ubuntu /opt/telco-generator
+          cd /opt/telco-generator
+
           cat > /opt/telco-generator/env.sh << ENVEOF
           export KAFKA_BROKER=${KafkaInstance.PrivateIp}:9092
           export KAFKA_TOPIC=telco-raw-telemetry
           ENVEOF
-          chown ubuntu:ubuntu /opt/telco-generator/env.sh
-
-          # Skip install if already set up (AMI-based deploy)
-          if [ -f /opt/telco-generator/venv/bin/python ]; then
-            echo "Generator already installed (AMI deploy)"
-            echo "GENERATOR_READY" > /tmp/generator-status
-            exit 0
-          fi
-
-          apt-get update
-          apt-get install -y python3-pip python3-venv
-
-          chown -R ubuntu:ubuntu /opt/telco-generator
-          cd /opt/telco-generator
 
           python3 -m venv venv
           source venv/bin/activate
@@ -546,6 +490,33 @@ Resources:
       Tags:
         - Key: Name
           Value: telco-ods-demo-generator
+
+  # --- IAM for S3 access (Flink instance needs to download binaries) ---
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3ArtifactRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub arn:aws:s3:::${S3ArtifactBucket}/*
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
 
 Outputs:
   KafkaPrivateIP:
@@ -587,6 +558,10 @@ Outputs:
   MLflowServingURL:
     Value: !Sub http://${MLflowInstance.PublicIp}:5003/invocations
     Description: MLflow model serving endpoint
+
+  DashboardURL:
+    Value: !Sub http://${MLflowInstance.PublicIp}:8050
+    Description: Live dashboard
 
   AtlasWhitelistIPs:
     Value: !Sub "${KafkaInstance.PublicIp}, ${GeneratorInstance.PublicIp}, ${FlinkInstance.PublicIp}, ${MLflowInstance.PublicIp}"
