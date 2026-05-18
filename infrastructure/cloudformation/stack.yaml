@@ -332,6 +332,11 @@ Resources:
           DASHEOF
           chown -R ubuntu:ubuntu /opt/dashboard
 
+          # Update MLflow service with public IP for DNS rebinding protection
+          PUBLIC_IP=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/public-ipv4)
+          sed -i "s|ExecStart=.*|ExecStart=/opt/mlflow/venv/bin/mlflow server --host 0.0.0.0 --port 5002 --allowed-hosts ${!PUBLIC_IP}:5002,${!PUBLIC_IP},localhost --backend-store-uri sqlite:///mlflow.db --default-artifact-root /opt/mlflow/artifacts|" /etc/systemd/system/mlflow-tracking.service 2>/dev/null || true
+          systemctl daemon-reload 2>/dev/null || true
+
           # Skip install if already set up (AMI-based deploy)
           if [ -f /opt/mlflow/venv/bin/mlflow ]; then
             echo "MLflow already installed (AMI deploy) — starting services"
@@ -368,7 +373,7 @@ Resources:
           [Service]
           Type=simple
           WorkingDirectory=/opt/mlflow
-          ExecStart=/opt/mlflow/venv/bin/mlflow server --host 0.0.0.0 --port 5002 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /opt/mlflow/artifacts --allowed-host-headers all
+          ExecStart=/opt/mlflow/venv/bin/mlflow server --host 0.0.0.0 --port 5002 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /opt/mlflow/artifacts
           Restart=on-failure
           [Install]
           WantedBy=multi-user.target
