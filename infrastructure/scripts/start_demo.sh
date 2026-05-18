@@ -52,7 +52,7 @@ echo ""
 # Clear previous results from MongoDB
 echo "[3/6] Clearing previous results from MongoDB..."
 ssh $SSH_OPTS ubuntu@$MLFLOW_IP "bash -c '
-export \$(cat /opt/mlflow/.env | xargs)
+source /opt/dashboard/env.sh
 /opt/mlflow/venv/bin/python3 -c \"
 from pymongo import MongoClient
 import os
@@ -81,12 +81,9 @@ echo ""
 # Ensure dashboard is running on MLflow instance
 echo "[6/6] Ensuring dashboard is running..."
 ssh $SSH_OPTS ubuntu@$MLFLOW_IP "bash -c '
-if ! pgrep -f \"app.py.*8050\" > /dev/null 2>&1; then
+if ! pgrep -f \"app.py\" > /dev/null 2>&1; then
+  source /opt/dashboard/env.sh
   cd /opt/dashboard
-  export \$(cat /opt/mlflow/.env | xargs)
-  export SSH_KEY=/opt/dashboard/bennyk_aws_key.pem
-  export GENERATOR_IP=$GENERATOR_PRIVATE_IP
-  export FLINK_IP=$FLINK_PRIVATE_IP
   nohup /opt/mlflow/venv/bin/python app.py >> /var/log/dashboard.log 2>&1 &
   sleep 2
   echo \"  Dashboard started\"
@@ -105,9 +102,9 @@ echo "  Flink UI:    http://$FLINK_IP:8081"
 echo "  MLflow UI:   http://$MLFLOW_IP:5002"
 echo "  MLflow API:  http://$MLFLOW_IP:5003/invocations"
 echo ""
-echo "  Data will appear on the dashboard within ~30 seconds."
-echo "  Each cell tower emits a snapshot every 30s. The Atlas"
-echo "  Trigger (ap-southeast-2) fires on insert to run inference."
+echo "  Data will appear on the dashboard after the first 5-minute"
+echo "  Flink window completes. The Atlas Trigger fires on each"
+echo "  insert to windowed_network_metrics to run ML inference."
 echo ""
 echo "  To stop: ./infrastructure/scripts/stop_demo.sh"
 echo "============================================================"

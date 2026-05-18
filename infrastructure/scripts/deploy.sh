@@ -28,7 +28,8 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
   export $(grep -v '^#' "$PROJECT_ROOT/.env" | xargs)
   echo "  Loaded .env"
 else
-  echo "  Warning: No .env file found. Atlas trigger setup will be skipped."
+  echo "  Error: No .env file found. Required for MONGODB_URI and Atlas keys."
+  exit 1
 fi
 
 # Prerequisites
@@ -56,7 +57,7 @@ echo "  Key pair: $KEY_PAIR_NAME"
 
 # Deploy CloudFormation
 echo ""
-echo "[1/5] Deploying CloudFormation stack..."
+echo "[1/6] Deploying CloudFormation stack..."
 aws cloudformation deploy \
   --template-file "$CFN_TEMPLATE" \
   --stack-name "$STACK_NAME" \
@@ -71,7 +72,7 @@ echo "  Stack created."
 
 # Get outputs
 echo ""
-echo "[2/5] Retrieving instance IPs..."
+echo "[2/6] Retrieving instance IPs..."
 get_output() {
   aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" \
     --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
@@ -92,7 +93,7 @@ echo "  MLflow:    $MLFLOW_IP"
 
 # Wait for userdata to complete on all instances
 echo ""
-echo "[3/5] Waiting for instances to bootstrap (~5 min)..."
+echo "[3/6] Waiting for instances to bootstrap (~5 min)..."
 echo "  (Flink PyFlink install is the bottleneck)"
 
 # Poll until all instances report ready (max 8 min)
@@ -122,7 +123,7 @@ done
 
 # Upload code and configure
 echo ""
-echo "[4/5] Uploading code and configuring..."
+echo "[4/6] Uploading code and configuring..."
 
 # Fix ownership (userdata runs as root, scp runs as ubuntu)
 ssh $SSH_OPTS ubuntu@$FLINK_IP "sudo chown -R ubuntu:ubuntu /opt/flink-job /opt/flink-env" 2>/dev/null
@@ -191,12 +192,15 @@ scp $SSH_OPTS "$SSH_KEY_PATH" ubuntu@${MLFLOW_IP}:/opt/dashboard/bennyk_aws_key.
 ssh $SSH_OPTS ubuntu@$MLFLOW_IP "chmod 400 /opt/dashboard/bennyk_aws_key.pem" 2>/dev/null
 echo "  MLflow model + dashboard uploaded"
 
+# Install dashboard deps
+ssh $SSH_OPTS ubuntu@$MLFLOW_IP "source /opt/mlflow/venv/bin/activate && pip install -r /opt/dashboard/requirements.txt -q 2>/dev/null" 2>/dev/null
+
 # Train model and start serving
 ssh $SSH_OPTS ubuntu@$MLFLOW_IP "
 cd /opt/mlflow/app
 source /opt/mlflow/venv/bin/activate
 export MLFLOW_TRACKING_URI=http://localhost:5002
-export MONGODB_URI='${MongoDBUri}'
+export MONGODB_URI='${MONGODB_URI}'
 pip install -r requirements.txt -q 2>/dev/null
 python generate_training_data.py
 python train_model.py
@@ -215,13 +219,39 @@ echo "  Model serving started"
 ssh $SSH_OPTS ubuntu@$MLFLOW_IP "
 source /opt/dashboard/env.sh
 cd /opt/dashboard
-nohup /opt/mlflow/venv/bin/python app.py >> /var/log/dashboard.log 2>&1 < /dev/null &
+source /opt/mlflow/venv/bin/activate
+nohup python app.py >> /var/log/dashboard.log 2>&1 < /dev/null &
 " 2>/dev/null
 echo "  Dashboard started"
 
+# Start pipeline
+echo ""
+echo "[5/6] Starting pipeline..."
+
+# Start Flink job
+ssh $SSH_OPTS ubuntu@$FLINK_IP "
+source /opt/flink-env/bin/activate
+export \$(cat /opt/flink-job-config.env | xargs)
+/opt/flink/bin/flink run -py /opt/flink-job/flink_job.py -pyexec /opt/flink-env/bin/python3 >> /var/log/flink-job.log 2>&1 &
+sleep 8
+/opt/flink/bin/flink list -r 2>/dev/null | grep -c RUNNING
+" 2>/dev/null
+echo "  Flink job submitted"
+
+# Start Generator
+ssh $SSH_OPTS ubuntu@$GENERATOR_IP "
+cd /opt/telco-generator
+source venv/bin/activate
+source env.sh
+nohup python -u generator.py >> /var/log/generator.log 2>&1 < /dev/null &
+sleep 3
+pgrep -f generator.py > /dev/null && echo 'ok' || echo 'FAILED'
+" 2>/dev/null
+echo "  Generator started"
+
 # Atlas setup
 echo ""
-echo "[5/5] Configuring Atlas..."
+echo "[6/6] Configuring Atlas..."
 
 # Whitelist IPs
 for IP in $KAFKA_PUBLIC_IP $GENERATOR_IP $FLINK_IP $MLFLOW_IP; do
@@ -240,7 +270,7 @@ fi
 
 echo ""
 echo "============================================================"
-echo "DEPLOYMENT COMPLETE"
+echo "DEPLOYMENT COMPLETE — Pipeline running"
 echo "============================================================"
 echo ""
 echo "  Dashboard:   http://$MLFLOW_IP:8050"
@@ -248,8 +278,9 @@ echo "  Flink UI:    http://$FLINK_IP:8081"
 echo "  MLflow:      http://$MLFLOW_IP:5002"
 echo "  MLflow API:  http://$MLFLOW_IP:5003/invocations"
 echo ""
-echo "  Use the dashboard 'Start Demo' button, or:"
-echo "    ./infrastructure/scripts/start_demo.sh"
+echo "  Pipeline is running. Data will appear on the dashboard"
+echo "  after the first 5-minute Flink window completes."
 echo ""
+echo "  To restart: ./infrastructure/scripts/start_demo.sh"
 echo "  To tear down: ./infrastructure/scripts/teardown.sh"
 echo "============================================================"
