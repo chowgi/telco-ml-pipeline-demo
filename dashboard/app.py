@@ -33,7 +33,7 @@ demo_state = {"status": "unknown", "message": ""}
 
 def run_ssh(host, command, timeout=60):
     """Run a command on a remote host via SSH."""
-    cmd = ["ssh"] + SSH_OPTS.split() + [f"ubuntu@{host}", "bash", "-c", command]
+    cmd = ["ssh"] + SSH_OPTS.split() + [f"ubuntu@{host}", command]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return result.returncode == 0, result.stdout + result.stderr
 
@@ -150,7 +150,7 @@ def start_demo():
 
             # Restart Flink cluster and submit fresh job
             if FLINK_IP:
-                run_ssh(FLINK_IP, "/opt/flink-job/restart.sh", timeout=30)
+                run_ssh(FLINK_IP, "sudo /opt/flink-job/restart.sh", timeout=30)
 
             # Start generator
             if GENERATOR_IP:
@@ -175,10 +175,10 @@ def stop_demo():
     def _stop():
         try:
             if GENERATOR_IP:
-                run_ssh(GENERATOR_IP, "pkill -f generator.py 2>/dev/null")
+                run_ssh(GENERATOR_IP, "sudo pkill -f generator.py 2>/dev/null")
 
             if FLINK_IP:
-                run_ssh(FLINK_IP, "/opt/flink-job/stop.sh")
+                run_ssh(FLINK_IP, "sudo /opt/flink-job/stop.sh")
 
             time.sleep(3)
             db.network_health_predictions.delete_many({})
