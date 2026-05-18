@@ -103,15 +103,15 @@ def stats():
 
     for r in recent:
         if "timestamp" in r:
-            r["timestamp"] = r["timestamp"].isoformat()
+            r["timestamp"] = r["timestamp"].isoformat() + "Z"
 
     for c in cell_detail:
         if "last_seen" in c:
-            c["last_seen"] = c["last_seen"].isoformat()
+            c["last_seen"] = c["last_seen"].isoformat() + "Z"
 
     time_series = {}
     for item in predictions_over_time:
-        minute = item["_id"]["minute"].isoformat()
+        minute = item["_id"]["minute"].isoformat() + "Z"
         label = item["_id"]["label"]
         if minute not in time_series:
             time_series[minute] = {"excellent": 0, "good": 0, "poor": 0}
