@@ -31,6 +31,11 @@
             color: #8b949e;
             margin-top: 2px;
         }
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
         .live-badge {
             display: flex;
             align-items: center;
@@ -38,6 +43,7 @@
             font-size: 13px;
             color: #3fb950;
         }
+        .live-badge.inactive { color: #484f58; }
         .live-dot {
             width: 8px;
             height: 8px;
@@ -45,9 +51,48 @@
             border-radius: 50%;
             animation: pulse 2s infinite;
         }
+        .live-badge.inactive .live-dot {
+            background: #484f58;
+            animation: none;
+        }
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.4; }
+        }
+        .demo-controls {
+            display: flex;
+            gap: 8px;
+        }
+        .btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid #30363d;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-start {
+            background: #238636;
+            color: #fff;
+            border-color: #2ea043;
+        }
+        .btn-start:hover:not(:disabled) { background: #2ea043; }
+        .btn-stop {
+            background: #21262d;
+            color: #f85149;
+            border-color: #f85149;
+        }
+        .btn-stop:hover:not(:disabled) { background: #3d1214; }
+        .demo-status {
+            font-size: 11px;
+            color: #8b949e;
+            max-width: 200px;
+            text-align: right;
         }
         .container {
             max-width: 1600px;
@@ -251,11 +296,18 @@
     <div class="header">
         <div>
             <h1>Telco ODS - Autonomous Network Health</h1>
-            <div class="subtitle">MongoDB Atlas as Operational Data Store | Real-time ML Inference Pipeline</div>
+            <div class="subtitle">MongoDB Atlas as Operational Data Store | Apache Flink Stream Processing | Real-time ML Inference</div>
         </div>
-        <div class="live-badge">
-            <div class="live-dot"></div>
-            <span>LIVE — refreshing every 5s</span>
+        <div class="header-right">
+            <div class="demo-status" id="demoStatus"></div>
+            <div class="demo-controls">
+                <button class="btn btn-start" id="btnStart" onclick="startDemo()">Start Demo</button>
+                <button class="btn btn-stop" id="btnStop" onclick="stopDemo()">Stop</button>
+            </div>
+            <div class="live-badge" id="liveBadge">
+                <div class="live-dot"></div>
+                <span id="liveText">LIVE</span>
+            </div>
         </div>
     </div>
 
@@ -487,11 +539,62 @@
             }).join('');
         }
 
+        function updateLiveBadge(active) {
+            const badge = document.getElementById('liveBadge');
+            const text = document.getElementById('liveText');
+            if (active) {
+                badge.classList.remove('inactive');
+                text.textContent = 'LIVE';
+            } else {
+                badge.classList.add('inactive');
+                text.textContent = 'INACTIVE';
+            }
+        }
+
+        function updateDemoStatus(state) {
+            const el = document.getElementById('demoStatus');
+            const btnStart = document.getElementById('btnStart');
+            const btnStop = document.getElementById('btnStop');
+            el.textContent = state.message || '';
+
+            const busy = state.status === 'starting' || state.status === 'stopping';
+            btnStart.disabled = busy || state.status === 'running';
+            btnStop.disabled = busy || state.status === 'stopped';
+        }
+
+        async function startDemo() {
+            document.getElementById('btnStart').disabled = true;
+            document.getElementById('demoStatus').textContent = 'Starting...';
+            try {
+                const resp = await fetch('/api/demo/start', { method: 'POST' });
+                const data = await resp.json();
+                document.getElementById('demoStatus').textContent = data.message;
+            } catch (e) {
+                document.getElementById('demoStatus').textContent = 'Error: ' + e.message;
+                document.getElementById('btnStart').disabled = false;
+            }
+        }
+
+        async function stopDemo() {
+            document.getElementById('btnStop').disabled = true;
+            document.getElementById('demoStatus').textContent = 'Stopping...';
+            try {
+                const resp = await fetch('/api/demo/stop', { method: 'POST' });
+                const data = await resp.json();
+                document.getElementById('demoStatus').textContent = data.message;
+            } catch (e) {
+                document.getElementById('demoStatus').textContent = 'Error: ' + e.message;
+                document.getElementById('btnStop').disabled = false;
+            }
+        }
+
         async function fetchAndUpdate() {
             try {
                 const resp = await fetch('/api/stats');
                 const data = await resp.json();
                 updateDashboard(data);
+                updateLiveBadge(data.pipeline_active);
+                if (data.demo_state) updateDemoStatus(data.demo_state);
             } catch (e) {
                 console.error('Fetch error:', e);
             }

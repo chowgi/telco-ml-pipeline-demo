@@ -2,11 +2,14 @@
 """
 Live dashboard for the Telco ODS Autonomous Networks demo.
 Shows real-time predictions, pipeline metrics, and architecture overview.
+Includes Start/Stop Demo controls that trigger pipeline operations.
 """
 
 import os
+import subprocess
+import threading
 from datetime import datetime, timezone, timedelta
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, request
 from pymongo import MongoClient
 
 app = Flask(__name__)
@@ -14,8 +17,24 @@ app = Flask(__name__)
 MONGODB_URI = os.getenv("MONGODB_URI")
 MONGODB_DB = "ods_demo_db"
 
+# SSH config for remote commands
+SSH_KEY = os.getenv("SSH_KEY", "/opt/dashboard/bennyk_aws_key.pem")
+GENERATOR_IP = os.getenv("GENERATOR_IP", "")
+FLINK_IP = os.getenv("FLINK_IP", "")
+SSH_OPTS = f"-o ConnectTimeout=10 -o StrictHostKeyChecking=no -i {SSH_KEY}"
+
 client = MongoClient(MONGODB_URI)
 db = client[MONGODB_DB]
+
+# Track demo state
+demo_state = {"status": "unknown", "message": ""}
+
+
+def run_ssh(host, command):
+    """Run a command on a remote host via SSH."""
+    cmd = f"ssh {SSH_OPTS} ubuntu@{host} '{command}'"
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+    return result.returncode == 0, result.stdout + result.stderr
 
 
 @app.route("/")
@@ -30,13 +49,11 @@ def stats():
     five_min_ago = now - timedelta(minutes=5)
     thirty_min_ago = now - timedelta(minutes=30)
 
-    # Prediction distribution (last 30 min)
     distribution = list(db.network_health_predictions.aggregate([
         {"$match": {"timestamp": {"$gte": thirty_min_ago}}},
         {"$group": {"_id": "$prediction.label", "count": {"$sum": 1}}},
     ]))
 
-    # Predictions per minute (last 30 min)
     predictions_over_time = list(db.network_health_predictions.aggregate([
         {"$match": {"timestamp": {"$gte": thirty_min_ago}}},
         {"$group": {
@@ -49,19 +66,16 @@ def stats():
         {"$sort": {"_id.minute": 1}},
     ]))
 
-    # Recent predictions (latest 20)
     recent = list(db.network_health_predictions.find(
         {},
         {"_id": 0, "cell_id": 1, "region": 1, "prediction": 1, "timestamp": 1},
     ).sort("timestamp", -1).limit(20))
 
-    # Events ingested (last 5 min)
     events_result = list(db.windowed_network_metrics.aggregate([
         {"$match": {"window_end": {"$gte": five_min_ago}}},
         {"$group": {"_id": None, "total_events": {"$sum": "$event_count"}, "docs": {"$sum": 1}}},
     ]))
 
-    # Per-region health (last 10 min)
     region_health = list(db.network_health_predictions.aggregate([
         {"$match": {"timestamp": {"$gte": now - timedelta(minutes=10)}}},
         {"$group": {
@@ -70,7 +84,6 @@ def stats():
         }},
     ]))
 
-    # Cell-level detail (last emission per cell)
     cell_detail = list(db.windowed_network_metrics.aggregate([
         {"$sort": {"window_end": -1}},
         {"$group": {
@@ -84,7 +97,6 @@ def stats():
         {"$sort": {"_id": 1}},
     ]))
 
-    # Predictions rate
     recent_count = db.network_health_predictions.count_documents(
         {"timestamp": {"$gte": one_min_ago}}
     )
@@ -105,6 +117,9 @@ def stats():
             time_series[minute] = {"excellent": 0, "good": 0, "poor": 0}
         time_series[minute][label] = item["count"]
 
+    # Pipeline status check
+    pipeline_active = recent_count > 0
+
     return jsonify({
         "distribution": {item["_id"]: item["count"] for item in distribution},
         "predictions_per_minute": recent_count,
@@ -114,7 +129,87 @@ def stats():
         "region_health": [{"region": r["_id"]["region"], "label": r["_id"]["label"], "count": r["count"]} for r in region_health],
         "cell_detail": cell_detail,
         "time_series": time_series,
+        "pipeline_active": pipeline_active,
+        "demo_state": demo_state,
     })
+
+
+@app.route("/api/demo/start", methods=["POST"])
+def start_demo():
+    """Clear previous data and start the pipeline."""
+    demo_state["status"] = "starting"
+    demo_state["message"] = "Clearing previous results..."
+
+    def _start():
+        try:
+            # Clear MongoDB collections
+            db.network_health_predictions.delete_many({})
+            db.windowed_network_metrics.delete_many({})
+            demo_state["message"] = "Starting Flink stream processor..."
+
+            # Start Flink job
+            if FLINK_IP:
+                ok, out = run_ssh(FLINK_IP, (
+                    "/opt/flink/bin/flink list -r 2>/dev/null | grep -oP '[0-9a-f]{32}' | "
+                    "while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done; "
+                    "sleep 2; "
+                    "/opt/flink/bin/start-cluster.sh 2>/dev/null; "
+                    "sleep 3; "
+                    "source /opt/flink-env/bin/activate && "
+                    "export $(cat /opt/flink-job-config.env | xargs) && "
+                    "/opt/flink/bin/flink run -py /opt/flink-job/flink_job.py "
+                    "-pyexec /opt/flink-env/bin/python3 -d 2>&1 | grep -v WARNING"
+                ))
+                if not ok:
+                    demo_state["message"] = f"Flink start issue: {out[:200]}"
+
+            demo_state["message"] = "Starting data generator..."
+
+            # Start generator
+            if GENERATOR_IP:
+                ok, out = run_ssh(GENERATOR_IP, (
+                    "pkill -f generator.py 2>/dev/null; sleep 2; "
+                    "cd /opt/telco-generator && "
+                    "source venv/bin/activate && "
+                    "source /opt/telco-generator/env.sh && "
+                    "nohup python -u generator.py >> /var/log/generator.log 2>&1 &"
+                ))
+
+            demo_state["status"] = "running"
+            demo_state["message"] = "Pipeline running — data will appear in ~30 seconds"
+        except Exception as e:
+            demo_state["status"] = "error"
+            demo_state["message"] = str(e)[:200]
+
+    threading.Thread(target=_start, daemon=True).start()
+    return jsonify({"ok": True, "message": "Starting demo..."})
+
+
+@app.route("/api/demo/stop", methods=["POST"])
+def stop_demo():
+    """Stop the pipeline."""
+    demo_state["status"] = "stopping"
+    demo_state["message"] = "Stopping pipeline..."
+
+    def _stop():
+        try:
+            if GENERATOR_IP:
+                run_ssh(GENERATOR_IP, "pkill -f generator.py 2>/dev/null")
+
+            if FLINK_IP:
+                run_ssh(FLINK_IP, (
+                    "/opt/flink/bin/flink list -r 2>/dev/null | grep -oP '[0-9a-f]{32}' | "
+                    "while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done"
+                ))
+
+            demo_state["status"] = "stopped"
+            demo_state["message"] = "Pipeline stopped"
+        except Exception as e:
+            demo_state["status"] = "error"
+            demo_state["message"] = str(e)[:200]
+
+    threading.Thread(target=_stop, daemon=True).start()
+    return jsonify({"ok": True, "message": "Stopping demo..."})
 
 
 if __name__ == "__main__":
