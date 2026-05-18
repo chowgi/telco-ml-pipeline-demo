@@ -15,7 +15,7 @@ from confluent_kafka import Producer, KafkaError
 
 from config import (
     KAFKA_PRODUCER_CONFIG, KAFKA_TOPIC, NUM_CELL_TOWERS,
-    NUM_PRODUCER_THREADS, EVENTS_PER_BATCH, ANOMALY_RATE, REGIONS,
+    NUM_PRODUCER_THREADS, EVENTS_PER_BATCH, ANOMALY_RATE, REGIONS, BATCH_SLEEP,
 )
 from models import create_cell_towers, generate_normal_event, generate_anomaly_event, generate_excellent_event
 
@@ -135,6 +135,8 @@ def producer_thread(thread_id: int, towers):
     while running:
         produce_batch(producer, towers, EVENTS_PER_BATCH)
         producer.poll(0)
+        if BATCH_SLEEP > 0:
+            time.sleep(BATCH_SLEEP)
 
     producer.flush(timeout=10)
     print(f"[Thread-{thread_id}] Stopped")
