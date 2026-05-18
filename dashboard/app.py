@@ -33,8 +33,11 @@ demo_state = {"status": "unknown", "message": ""}
 
 def run_ssh(host, command, timeout=60):
     """Run a command on a remote host via SSH."""
-    cmd = f"ssh {SSH_OPTS} ubuntu@{host} '{command}'"
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+    cmd = f'ssh {SSH_OPTS} ubuntu@{host} bash -s'
+    result = subprocess.run(
+        cmd, shell=True, capture_output=True, text=True,
+        input=command, timeout=timeout,
+    )
     return result.returncode == 0, result.stdout + result.stderr
 
 
@@ -166,7 +169,8 @@ def start_demo():
                     "cd /opt/telco-generator && "
                     "source venv/bin/activate && "
                     "source /opt/telco-generator/env.sh && "
-                    "nohup python -u generator.py >> /var/log/generator.log 2>&1 & disown && sleep 1"
+                    "nohup python -u generator.py </dev/null >> /var/log/generator.log 2>&1 & "
+                    "sleep 2; ps aux | grep -q '[g]enerator.py'"
                 ))
 
             demo_state["status"] = "running"
