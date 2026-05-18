@@ -36,7 +36,7 @@ METRIC_FIELDS = [
 ]
 
 RESERVOIR_SIZE = 500
-EMIT_INTERVAL_MS = 30000
+EMIT_INTERVAL_MS = 10000
 
 
 def is_anomaly(event):
@@ -169,7 +169,7 @@ class CellWindowProcessor(KeyedProcessFunction):
                 stats = compute_stats(acc)
                 doc = {
                     "window_end": datetime.now(timezone.utc),
-                    "window_size_seconds": 30,
+                    "window_size_seconds": 10,
                     "rolling_window_seconds": 300,
                     "cell_id": ctx.get_current_key(),
                     "region": acc["region"] or "unknown",
