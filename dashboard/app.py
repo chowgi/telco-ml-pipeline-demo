@@ -154,7 +154,7 @@ def start_demo():
                     "ps aux | grep org.apache.flink | grep -v grep | "
                     "awk '{print $2}' | xargs -r kill -9 2>/dev/null; "
                     "sleep 2; "
-                    "rm -f /opt/flink/log/*.pid; "
+                    "rm -f /opt/flink/log/*.pid /tmp/flink-*.pid; "
                     "/opt/flink/bin/start-cluster.sh 2>/dev/null"
                 ))
                 time.sleep(5)
