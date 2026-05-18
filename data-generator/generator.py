@@ -17,11 +17,73 @@ from config import (
     KAFKA_PRODUCER_CONFIG, KAFKA_TOPIC, NUM_CELL_TOWERS,
     NUM_PRODUCER_THREADS, EVENTS_PER_BATCH, ANOMALY_RATE, REGIONS,
 )
-from models import create_cell_towers, generate_normal_event, generate_anomaly_event
+from models import create_cell_towers, generate_normal_event, generate_anomaly_event, generate_excellent_event
 
 running = True
 total_events = 0
 events_lock = threading.Lock()
+
+# Cell-level degradation state: maps cell_id -> ("poor"|"degraded", expiry_time)
+cell_degradation = {}
+degradation_lock = threading.Lock()
+
+EXCELLENT_CELL_FRACTION = 0.30
+POOR_CELL_FRACTION = 0.06
+DEGRADED_CELL_FRACTION = 0.12
+DEGRADATION_DURATION_MIN = 300
+DEGRADATION_DURATION_MAX = 900
+
+
+def update_cell_degradation(towers):
+    """Periodically assign health states to cells so window averages reflect realistic distribution."""
+    now = time.time()
+    with degradation_lock:
+        expired = [cid for cid, (_, expiry) in cell_degradation.items() if now > expiry]
+        for cid in expired:
+            del cell_degradation[cid]
+
+        active_poor = sum(1 for _, (state, _) in cell_degradation.items() if state == "poor")
+        active_degraded = sum(1 for _, (state, _) in cell_degradation.items() if state == "degraded")
+        active_excellent = sum(1 for _, (state, _) in cell_degradation.items() if state == "excellent")
+
+        target_poor = int(len(towers) * POOR_CELL_FRACTION)
+        target_degraded = int(len(towers) * DEGRADED_CELL_FRACTION)
+        target_excellent = int(len(towers) * EXCELLENT_CELL_FRACTION)
+
+        available = [t for t in towers if t.cell_id not in cell_degradation]
+        random.shuffle(available)
+
+        for tower in available:
+            if active_poor < target_poor:
+                duration = random.uniform(DEGRADATION_DURATION_MIN, DEGRADATION_DURATION_MAX)
+                cell_degradation[tower.cell_id] = ("poor", now + duration)
+                active_poor += 1
+            elif active_degraded < target_degraded:
+                duration = random.uniform(DEGRADATION_DURATION_MIN, DEGRADATION_DURATION_MAX)
+                cell_degradation[tower.cell_id] = ("degraded", now + duration)
+                active_degraded += 1
+            elif active_excellent < target_excellent:
+                duration = random.uniform(DEGRADATION_DURATION_MIN, DEGRADATION_DURATION_MAX)
+                cell_degradation[tower.cell_id] = ("excellent", now + duration)
+                active_excellent += 1
+            else:
+                break
+
+
+def degradation_manager(towers):
+    """Background thread that rotates cell degradation states."""
+    while running:
+        update_cell_degradation(towers)
+        time.sleep(30)
+
+
+def get_cell_state(cell_id: str) -> str:
+    """Returns 'poor', 'degraded', or 'normal' for a cell."""
+    with degradation_lock:
+        entry = cell_degradation.get(cell_id)
+        if entry:
+            return entry[0]
+    return "normal"
 
 
 def delivery_callback(err, msg):
@@ -36,7 +98,18 @@ def produce_batch(producer: Producer, towers, batch_size: int):
         tower = random.choice(towers)
         imsi = tower.generate_imsi()
 
-        if random.random() < ANOMALY_RATE:
+        cell_state = get_cell_state(tower.cell_id)
+
+        if cell_state == "excellent":
+            event = generate_excellent_event(tower.cell_id, imsi, tower.region)
+        elif cell_state == "poor":
+            event = generate_anomaly_event(tower.cell_id, imsi, tower.region)
+        elif cell_state == "degraded":
+            if random.random() < 0.6:
+                event = generate_anomaly_event(tower.cell_id, imsi, tower.region)
+            else:
+                event = generate_normal_event(tower.cell_id, imsi, tower.region)
+        elif random.random() < ANOMALY_RATE:
             event = generate_anomaly_event(tower.cell_id, imsi, tower.region)
         else:
             event = generate_normal_event(tower.cell_id, imsi, tower.region)
@@ -96,11 +169,23 @@ def main():
     print(f"Topic: {KAFKA_TOPIC}")
     print(f"Producer threads: {NUM_PRODUCER_THREADS}")
     print(f"Cell towers: {NUM_CELL_TOWERS}")
-    print(f"Anomaly rate: {ANOMALY_RATE*100:.1f}%")
+    print(f"Anomaly rate: {ANOMALY_RATE*100:.1f}% (random) + cell degradation")
+    print(f"Cell degradation: ~{POOR_CELL_FRACTION*100:.0f}% poor, ~{DEGRADED_CELL_FRACTION*100:.0f}% degraded")
     print("=" * 60)
 
     towers = create_cell_towers(REGIONS, NUM_CELL_TOWERS)
     print(f"Created {len(towers)} cell towers across {len(REGIONS)} regions")
+
+    # Initialize cell health states
+    update_cell_degradation(towers)
+    with degradation_lock:
+        poor_cells = [cid for cid, (s, _) in cell_degradation.items() if s == "poor"]
+        degraded_cells = [cid for cid, (s, _) in cell_degradation.items() if s == "degraded"]
+        excellent_cells = [cid for cid, (s, _) in cell_degradation.items() if s == "excellent"]
+    print(f"Cell states: {len(excellent_cells)} excellent, {len(degraded_cells)} degraded, {len(poor_cells)} poor")
+
+    degradation_thread = threading.Thread(target=degradation_manager, args=(towers,), daemon=True)
+    degradation_thread.start()
 
     stats_thread = threading.Thread(target=stats_reporter, daemon=True)
     stats_thread.start()

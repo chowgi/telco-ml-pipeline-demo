@@ -58,6 +58,21 @@ def generate_normal_event(cell_id: str, imsi: str, region: str) -> NetworkMetric
     )
 
 
+def generate_excellent_event(cell_id: str, imsi: str, region: str) -> NetworkMetricEvent:
+    return NetworkMetricEvent(
+        timestamp=time.time(),
+        cell_id=cell_id,
+        imsi=imsi,
+        region=region,
+        signal_strength_dbm=random.gauss(-48, 4),
+        throughput_mbps=max(80, random.gauss(125, 15)),
+        latency_ms=max(5, random.gauss(18, 4)),
+        call_drop_rate_percent=max(0, random.gauss(0.2, 0.1)),
+        packet_loss_percent=max(0, random.gauss(0.1, 0.05)),
+        jitter_ms=max(0, random.gauss(1.0, 0.4)),
+    )
+
+
 def generate_anomaly_event(cell_id: str, imsi: str, region: str) -> NetworkMetricEvent:
     anomaly_type = random.choice(["poor_signal", "high_latency", "packet_storm", "degraded"])
 
