@@ -151,13 +151,16 @@ def start_demo():
             db.windowed_network_metrics.delete_many({})
             demo_state["message"] = "Starting data generator..."
 
-            # Cancel any existing Flink job and submit fresh (avoids Kafka backlog)
+            # Kill Flink cluster and restart fresh (PyFlink needs clean task managers)
             if FLINK_IP:
                 run_ssh(FLINK_IP, (
-                    "/opt/flink/bin/flink list -r 2>/dev/null | grep -oP '[0-9a-f]{32}' | "
-                    "while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done"
+                    "ps aux | grep org.apache.flink | grep -v grep | "
+                    "awk '{print $2}' | xargs -r kill -9 2>/dev/null; "
+                    "sleep 2; "
+                    "rm -f /opt/flink/log/*.pid; "
+                    "/opt/flink/bin/start-cluster.sh 2>/dev/null"
                 ))
-                time.sleep(3)
+                time.sleep(5)
                 run_ssh(FLINK_IP, (
                     "source /opt/flink-env/bin/activate && "
                     "export $(cat /opt/flink-job-config.env | xargs) && "
@@ -199,11 +202,11 @@ def stop_demo():
 
             if FLINK_IP:
                 run_ssh(FLINK_IP, (
-                    "/opt/flink/bin/flink list -r 2>/dev/null | grep -oP '[0-9a-f]{32}' | "
-                    "while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done"
+                    "ps aux | grep org.apache.flink | grep -v grep | "
+                    "awk '{print $2}' | xargs -r kill -9 2>/dev/null"
                 ))
 
-            time.sleep(5)
+            time.sleep(3)
             db.network_health_predictions.delete_many({})
             db.windowed_network_metrics.delete_many({})
 
