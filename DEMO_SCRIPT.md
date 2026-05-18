@@ -64,17 +64,19 @@ SSH_KEY=~/.ssh/bennyk_aws_key.pem
 GENERATOR_IP=<from deploy output>
 ssh -i $SSH_KEY ubuntu@$GENERATOR_IP "tail -5 /var/log/generator.log"
 ```
-*Expected output: ~35k events/sec*
+*Expected output: ~17k events/sec*
 
 **Atlas UI — Show documents arriving:**
 - Browse Collections → `ods_demo_db.windowed_network_metrics`
 - Click a document, expand nested metric objects
-- Point out: "Every 5 minutes, we get a full statistical profile per cell tower"
+- Point out: "Every 30 seconds, each cell tower emits a rolling statistical snapshot"
+- Refresh the page — new documents arriving continuously
 
 **Key talking point:**
-> "We're ingesting 35,000 events per second from 50 simulated cell towers.
-> The stream processor computes 5-minute tumbling windows — avg, min, max, p95
-> for every metric — and writes directly to Atlas. This is FR-3: real-time ingestion."
+> "We're ingesting 17,000+ events per second from 50 simulated cell towers.
+> The stream processor computes rolling 5-minute statistics — avg, min, max, p95
+> for every metric — and emits per-cell snapshots every 30 seconds directly to Atlas.
+> That's ~100 documents per minute, each triggering an ML prediction. This is FR-3: real-time ingestion."
 
 ---
 
@@ -98,9 +100,9 @@ curl -s -X POST http://$MLFLOW_IP:5003/invocations \
 *Expected: `{"predictions": [0]}` (excellent) and `{"predictions": [2]}` (poor)*
 
 **Key talking point:**
-> "The model takes the windowed averages and classifies network health in real-time.
-> This runs automatically via an Atlas Database Trigger — every time a new window
-> lands in the ODS, the trigger fires, calls the model, and stores the prediction.
+> "The model takes the rolling averages and classifies network health in real-time.
+> This runs automatically via an Atlas Database Trigger — every 30 seconds per cell,
+> the trigger fires, calls the model, and stores the prediction.
 > Zero orchestration code. That's FR-12: integration with operational workflows."
 
 ---
@@ -113,9 +115,9 @@ curl -s -X POST http://$MLFLOW_IP:5003/invocations \
 - Expand a prediction document — show input features, label, cell_id, region
 
 **Key talking point:**
-> "These predictions are being written automatically by the Atlas Trigger.
+> "These predictions are being written automatically by the Atlas Trigger — ~100 per minute.
 > No Airflow, no cron, no Lambda — Atlas itself is the event-driven compute layer.
-> The trigger fires within milliseconds of the new windowed data arriving."
+> The trigger fires within milliseconds of each new cell snapshot arriving."
 
 ---
 
@@ -158,12 +160,12 @@ db.network_health_predictions.aggregate([
 
 | Requirement | How We Demonstrated It |
 |-------------|----------------------|
-| FR-3: Real-time ingestion | 35k events/sec → Kafka → 5-min windows → Atlas |
+| FR-3: Real-time ingestion | 17k+ events/sec → Kafka → 30s rolling snapshots → Atlas |
 | FR-5: Schema flexibility | Nested metric objects (avg/min/max/p95 per field) |
 | FR-9: API-based access | MLflow REST API, Atlas Data API, Charts |
 | FR-11: Feature enablement | Windowed aggregates as ML features |
 | FR-12: Operational workflows | Atlas Trigger → MLflow → automated predictions |
-| FR-14: Operational scope | 5-min windows in ODS; raw data stays in Kafka/archive |
+| FR-14: Operational scope | 30s snapshots in ODS; raw data stays in Kafka/archive |
 
 ---
 
