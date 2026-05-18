@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telco ODS Demo - Architecture & Details</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f1419;
+            color: #e7e9ea;
+            line-height: 1.7;
+        }
+        .header {
+            background: linear-gradient(135deg, #1a1f2e 0%, #0d1117 100%);
+            border-bottom: 1px solid #30363d;
+            padding: 16px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            color: #58a6ff;
+        }
+        .header .subtitle {
+            font-size: 13px;
+            color: #8b949e;
+            margin-top: 2px;
+        }
+        .header a {
+            color: #58a6ff;
+            text-decoration: none;
+            font-size: 13px;
+            border: 1px solid #30363d;
+            padding: 6px 14px;
+            border-radius: 8px;
+            transition: background 0.2s;
+        }
+        .header a:hover { background: #21262d; }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 48px 32px;
+        }
+        h2 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #c9d1d9;
+            margin-bottom: 16px;
+            margin-top: 48px;
+        }
+        h2:first-child { margin-top: 0; }
+        h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #c9d1d9;
+            margin-top: 32px;
+            margin-bottom: 12px;
+        }
+        p {
+            font-size: 15px;
+            color: #8b949e;
+            margin-bottom: 16px;
+        }
+        p strong { color: #c9d1d9; }
+        .highlight-green { color: #3fb950; font-weight: 600; }
+        .highlight-blue { color: #58a6ff; font-weight: 600; }
+        .highlight-orange { color: #d29922; font-weight: 600; }
+        .highlight-red { color: #f85149; font-weight: 600; }
+        .arch-diagram {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 13px;
+            line-height: 1.8;
+            color: #8b949e;
+            background: #0d1117;
+            padding: 24px;
+            border-radius: 12px;
+            border: 1px solid #30363d;
+            overflow-x: auto;
+            white-space: pre;
+            margin: 24px 0;
+        }
+        .arch-diagram .blue { color: #58a6ff; font-weight: 600; }
+        .arch-diagram .green { color: #3fb950; font-weight: 600; }
+        .arch-diagram .orange { color: #d29922; font-weight: 600; }
+        .arch-diagram .red { color: #f85149; font-weight: 600; }
+        .arch-diagram .dim { color: #484f58; }
+        .section-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 24px;
+            margin: 24px 0;
+        }
+        .section-card h4 {
+            font-size: 14px;
+            font-weight: 600;
+            color: #c9d1d9;
+            margin-bottom: 12px;
+        }
+        .tech-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 16px 0;
+        }
+        .pill {
+            padding: 5px 14px;
+            border-radius: 16px;
+            font-size: 12px;
+            font-weight: 500;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+        }
+        .pill.atlas { border-color: #3fb950; color: #3fb950; }
+        .pill.kafka { border-color: #58a6ff; color: #58a6ff; }
+        .pill.ml { border-color: #d29922; color: #d29922; }
+        .requirements-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin: 16px 0;
+        }
+        .req-card {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .req-card .req-id {
+            font-size: 11px;
+            font-weight: 600;
+            color: #3fb950;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+        .req-card .req-title {
+            font-size: 14px;
+            color: #c9d1d9;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        .req-card .req-desc {
+            font-size: 12px;
+            color: #8b949e;
+            line-height: 1.5;
+        }
+        .data-flow-step {
+            display: flex;
+            gap: 16px;
+            margin: 16px 0;
+            align-items: flex-start;
+        }
+        .step-num {
+            min-width: 32px;
+            height: 32px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            font-weight: 600;
+            color: #58a6ff;
+        }
+        .step-content {
+            flex: 1;
+        }
+        .step-content .step-title {
+            font-size: 14px;
+            color: #c9d1d9;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .step-content .step-desc {
+            font-size: 13px;
+            color: #8b949e;
+        }
+        .step-connector {
+            width: 1px;
+            height: 16px;
+            background: #30363d;
+            margin-left: 16px;
+        }
+        .footer {
+            text-align: center;
+            padding: 32px;
+            font-size: 11px;
+            color: #484f58;
+            border-top: 1px solid #21262d;
+            margin-top: 48px;
+        }
+        @media (max-width: 768px) {
+            .requirements-grid { grid-template-columns: 1fr; }
+            .container { padding: 24px 16px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>Architecture & Demo Details</h1>
+            <div class="subtitle">Telco ODS - Autonomous Network Health Pipeline</div>
+        </div>
+        <a href="/">Back to Dashboard</a>
+    </div>
+
+    <div class="container">
+        <h2>What This Demo Shows</h2>
+        <p>
+            This is a live, end-to-end streaming ML pipeline that demonstrates
+            <span class="highlight-green">MongoDB Atlas as an Operational Data Store (ODS)</span>
+            for autonomous network health monitoring. The pipeline ingests raw telemetry from 50 simulated
+            cell towers, applies real-time stream processing, runs ML inference via event-driven triggers,
+            and serves pre-computed features — all with MongoDB Atlas at the centre.
+        </p>
+        <p>
+            The goal is to show how Atlas handles the requirements of a modern ODS: high-throughput
+            ingestion, flexible schema, event-driven workflows, ML integration, and low-latency
+            operational reads — without needing a separate streaming database, feature store backend,
+            or orchestration layer.
+        </p>
+
+        <h2>Pipeline Architecture</h2>
+        <div class="arch-diagram"><span class="blue">Data Generator</span> (50 cell towers, ~17,000 events/sec)
+        |
+        | raw telemetry events
+        v
+<span class="blue">Apache Kafka</span> (single broker, 12 partitions)
+        |
+        | consumer group
+        v
+<span class="blue">Apache Flink</span> (PyFlink — 5-min sliding window, 30s slide, per cell)
+        |
+        | aggregated metrics (avg, p95, min, max per cell per window)
+        v
+<span class="green">MongoDB Atlas</span> — <span class="green">windowed_network_metrics</span>  <span class="dim">(ODS collection)</span>
+        |
+        | <span class="orange">Atlas Database Trigger</span> (fires on every insert, zero orchestration)
+        v
+<span class="orange">MLflow Model Serving</span> (RandomForest classifier → excellent / good / poor)
+        |
+        | prediction written back
+        v
+<span class="green">MongoDB Atlas</span> — <span class="green">network_health_predictions</span>  <span class="dim">(results collection)</span>
+
+
+<span class="dim">--- Feature Store path (parallel) ---</span>
+
+<span class="green">MongoDB Atlas</span> — <span class="green">windowed_network_metrics</span>
+        |
+        | <span class="blue">Feast Materialization</span> (every 2 min, reads latest per cell)
+        v
+<span class="green">MongoDB Atlas</span> — <span class="green">telco_ods_online</span>  <span class="dim">(Feast online store collection)</span>
+        |
+        | sub-15ms point lookups
+        v
+<span class="blue">Feast Feature Server</span> (HTTP API for downstream consumers)</div>
+
+        <h2>Data Flow Step by Step</h2>
+
+        <div class="data-flow-step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+                <div class="step-title">Telemetry Generation</div>
+                <div class="step-desc">
+                    A Python generator simulates 50 cell towers across 5 Australian regions (Sydney, Melbourne, Brisbane, Perth, Adelaide).
+                    Each tower emits network metrics — signal strength, throughput, latency, packet loss, jitter, call drop rate — at ~340 events/sec/tower.
+                    Some towers are configured to periodically degrade, simulating real-world network issues.
+                </div>
+            </div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="data-flow-step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+                <div class="step-title">Stream Ingestion (Kafka)</div>
+                <div class="step-desc">
+                    Events flow into a 12-partition Kafka topic. This decouples the generator from processing,
+                    handles backpressure, and allows multiple consumers. In production this could be replaced
+                    with any event bus — the key point is raw events never touch Atlas directly.
+                </div>
+            </div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="data-flow-step">
+            <div class="step-num">3</div>
+            <div class="step-content">
+                <div class="step-title">Stream Processing (Flink)</div>
+                <div class="step-desc">
+                    PyFlink applies a 5-minute sliding window with 30-second slides, keyed by cell_id.
+                    For each window it computes rolling aggregates: mean, min, max, p95 for all metrics,
+                    plus event count and anomaly detection. The output is a single document per cell per slide
+                    written to Atlas — this is the "operational aggregate" that forms the ODS.
+                </div>
+            </div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="data-flow-step">
+            <div class="step-num">4</div>
+            <div class="step-content">
+                <div class="step-title">ODS Ingestion (Atlas)</div>
+                <div class="step-desc">
+                    Flink writes windowed metrics to <strong>windowed_network_metrics</strong> via pymongo.
+                    Each document has a flexible nested schema with per-metric statistics.
+                    Atlas handles ~100 inserts/sec (50 cells x 1 insert per 30s slide per cell, staggered).
+                </div>
+            </div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="data-flow-step">
+            <div class="step-num">5</div>
+            <div class="step-content">
+                <div class="step-title">Event-Driven ML Inference (Atlas Trigger)</div>
+                <div class="step-desc">
+                    An Atlas Database Trigger watches inserts on <strong>windowed_network_metrics</strong>.
+                    On each insert, it calls the MLflow model serving endpoint with the aggregated features.
+                    The model returns a classification (excellent / good / poor) and confidence score.
+                    The trigger writes the result to <strong>network_health_predictions</strong>.
+                    No external scheduler, no polling — purely event-driven with sub-second latency.
+                </div>
+            </div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="data-flow-step">
+            <div class="step-num">6</div>
+            <div class="step-content">
+                <div class="step-title">Feature Store (Feast + MongoDB Online Store)</div>
+                <div class="step-desc">
+                    Every 2 minutes, Feast materializes the latest per-cell features from
+                    <strong>windowed_network_metrics</strong> into a dedicated MongoDB collection
+                    (<strong>telco_ods_online</strong>). The Feast Feature Server provides a standard
+                    HTTP API for low-latency feature retrieval — demonstrating how Atlas can back
+                    both the ODS and the feature store without a separate Redis/DynamoDB layer.
+                </div>
+            </div>
+        </div>
+
+        <h2>ODS Requirements Demonstrated</h2>
+        <div class="requirements-grid">
+            <div class="req-card">
+                <div class="req-id">FR-3</div>
+                <div class="req-title">Real-time Ingestion</div>
+                <div class="req-desc">17,000+ raw events/sec processed by Flink, aggregated metrics written to Atlas every 30 seconds per cell tower with consistent sub-100ms write latency.</div>
+            </div>
+            <div class="req-card">
+                <div class="req-id">FR-5</div>
+                <div class="req-title">Schema Flexibility</div>
+                <div class="req-desc">Windowed metrics use nested documents with per-metric statistics (avg, min, max, p95). No migrations needed — schema evolves with the pipeline.</div>
+            </div>
+            <div class="req-card">
+                <div class="req-id">FR-9</div>
+                <div class="req-title">API-based Access</div>
+                <div class="req-desc">Dashboard reads via MongoDB Query API. Feast serves features over HTTP. Atlas Triggers provide serverless compute. No proprietary protocols.</div>
+            </div>
+            <div class="req-card">
+                <div class="req-id">FR-11</div>
+                <div class="req-title">ML Feature Enablement</div>
+                <div class="req-desc">Feast Feature Store with MongoDB as online store backend. Sub-15ms feature retrieval. Same database serves both operational queries and ML features.</div>
+            </div>
+            <div class="req-card">
+                <div class="req-id">FR-12</div>
+                <div class="req-title">Event-driven Workflows</div>
+                <div class="req-desc">Atlas Database Trigger fires on every insert — calls ML model, writes prediction, no orchestration layer. Change streams enable real-time reactions.</div>
+            </div>
+            <div class="req-card">
+                <div class="req-id">FR-14</div>
+                <div class="req-title">Operational Scope</div>
+                <div class="req-desc">Raw data stays in Kafka (ephemeral). ODS holds the operational window: aggregated metrics, predictions, and features — right-sized for operational queries.</div>
+            </div>
+        </div>
+
+        <h2>Technology Stack</h2>
+        <div class="tech-pills">
+            <span class="pill atlas">MongoDB Atlas (ODS)</span>
+            <span class="pill atlas">Atlas Database Triggers</span>
+            <span class="pill atlas">Change Streams</span>
+            <span class="pill atlas">Feast Online Store</span>
+            <span class="pill kafka">Apache Kafka</span>
+            <span class="pill kafka">Apache Flink (PyFlink 1.18)</span>
+            <span class="pill ml">MLflow</span>
+            <span class="pill ml">scikit-learn (RandomForest)</span>
+            <span class="pill">AWS EC2 (5 instances)</span>
+            <span class="pill">Python</span>
+            <span class="pill">Flask Dashboard</span>
+        </div>
+
+        <h3>Infrastructure</h3>
+        <div class="section-card">
+            <p style="margin-bottom: 8px; font-size: 13px;">
+                5 EC2 instances deployed via CloudFormation in ap-southeast-2:
+            </p>
+            <ul style="font-size: 13px; color: #8b949e; padding-left: 20px;">
+                <li><strong style="color: #c9d1d9;">Kafka</strong> — Single broker, 12 partitions, handles all raw event throughput</li>
+                <li><strong style="color: #c9d1d9;">Generator</strong> — Python process simulating 50 cell towers</li>
+                <li><strong style="color: #c9d1d9;">Flink</strong> — PyFlink cluster running the windowed aggregation job</li>
+                <li><strong style="color: #c9d1d9;">MLflow</strong> — Model registry, serving endpoint, and this dashboard</li>
+                <li><strong style="color: #c9d1d9;">Feast</strong> — Feature server with MongoDB online store backend</li>
+            </ul>
+        </div>
+
+        <h3>Key Design Decisions</h3>
+        <div class="section-card">
+            <ul style="font-size: 13px; color: #8b949e; padding-left: 20px; line-height: 2;">
+                <li><strong style="color: #c9d1d9;">Atlas as single operational backend</strong> — ODS, feature store, and prediction results all in one cluster. No Redis, no DynamoDB, no separate read replicas.</li>
+                <li><strong style="color: #c9d1d9;">Triggers instead of polling</strong> — ML inference is purely event-driven. No cron jobs, no Airflow DAGs, no batch scoring.</li>
+                <li><strong style="color: #c9d1d9;">Sliding windows, not tumbling</strong> — 5-min window with 30s slides means predictions update every 30 seconds with 5 minutes of context. Smooth, not bursty.</li>
+                <li><strong style="color: #c9d1d9;">Feast on MongoDB</strong> — Demonstrates that Atlas can serve as a feature store backend with competitive latency, eliminating a separate caching layer.</li>
+                <li><strong style="color: #c9d1d9;">Operational scope</strong> — Raw events stay in Kafka (short retention). Only aggregated, operationally-relevant data enters Atlas. Right data, right layer.</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="footer">
+        MongoDB Atlas ODS Demo | Autonomous Networks | Telstra Engineering
+    </div>
+</body>
+</html>

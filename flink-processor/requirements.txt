@@ -1,2 +1,5 @@
 apache-flink==1.18.1
 pymongo[srv]>=4.6
+grpcio==1.56.2
+grpcio-status==1.56.2
+protobuf==4.23.4

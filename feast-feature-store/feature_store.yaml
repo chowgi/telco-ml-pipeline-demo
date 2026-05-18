@@ -5,8 +5,8 @@ provider: local
 online_store:
   type: mongodb
   connection_string: ${MONGODB_URI}
-  database: ods_demo_db
-  collection: feast_online_features
+  database_name: ods_demo_db
+  collection_suffix: online
 
 offline_store:
   type: file

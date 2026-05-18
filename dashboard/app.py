@@ -9,6 +9,7 @@ import os
 import subprocess
 import threading
 import time
+import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask, render_template, jsonify, request
 from pymongo import MongoClient
@@ -22,6 +23,8 @@ MONGODB_DB = "ods_demo_db"
 SSH_KEY = os.getenv("SSH_KEY", "/opt/dashboard/bennyk_aws_key.pem")
 GENERATOR_IP = os.getenv("GENERATOR_IP", "")
 FLINK_IP = os.getenv("FLINK_IP", "")
+FEAST_IP = os.getenv("FEAST_IP", "")
+FLINK_PUBLIC_IP = os.getenv("FLINK_PUBLIC_IP", "")
 SSH_OPTS = f"-o ConnectTimeout=10 -o StrictHostKeyChecking=no -i {SSH_KEY}"
 
 client = MongoClient(MONGODB_URI)
@@ -41,6 +44,11 @@ def run_ssh(host, command, timeout=60):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/details")
+def details():
+    return render_template("details.html")
 
 
 @app.route("/api/stats")
@@ -132,6 +140,9 @@ def stats():
         "time_series": time_series,
         "pipeline_active": pipeline_active,
         "demo_state": demo_state,
+        "links": {
+            "flink_public_ip": FLINK_PUBLIC_IP or None,
+        },
     })
 
 
@@ -146,15 +157,24 @@ def start_demo():
             # Clear MongoDB collections
             db.network_health_predictions.delete_many({})
             db.windowed_network_metrics.delete_many({})
-            demo_state["message"] = "Starting data generator..."
 
-            # Restart Flink cluster and submit fresh job
+            # Start Flink job
+            demo_state["message"] = "Starting Flink job..."
             if FLINK_IP:
-                run_ssh(FLINK_IP, "/opt/flink-job/restart.sh", timeout=30)
+                ok, out = run_ssh(FLINK_IP, "/opt/flink-job/restart.sh", timeout=60)
+                if not ok:
+                    demo_state["status"] = "error"
+                    demo_state["message"] = f"Flink failed: {out[-200:]}"
+                    return
 
             # Start generator
+            demo_state["message"] = "Starting data generator..."
             if GENERATOR_IP:
-                ok, out = run_ssh(GENERATOR_IP, "/opt/telco-generator/start.sh")
+                ok, out = run_ssh(GENERATOR_IP, "/opt/telco-generator/start.sh", timeout=30)
+                if not ok:
+                    demo_state["status"] = "error"
+                    demo_state["message"] = f"Generator failed: {out[-200:]}"
+                    return
 
             demo_state["status"] = "running"
             demo_state["message"] = "Pipeline running — data will appear in ~30 seconds"
@@ -192,6 +212,80 @@ def stop_demo():
 
     threading.Thread(target=_stop, daemon=True).start()
     return jsonify({"ok": True, "message": "Stopping demo..."})
+
+
+@app.route("/api/feast")
+def feast_stats():
+    """Query Feast feature server and return feature store status."""
+    result = {
+        "cells_materialized": 0,
+        "last_updated": None,
+        "retrieval_ms": None,
+        "sample_features": [],
+        "status": "unavailable",
+    }
+
+    try:
+        # Count materialized entities from the feast online store collection
+        feast_col = db.get_collection("telco_ods_online")
+        result["cells_materialized"] = feast_col.count_documents({})
+
+        # Get last materialization time from Feast online store event_timestamps
+        latest = feast_col.find_one(
+            {"event_timestamps.windowed_cell_metrics": {"$exists": True}},
+            {"event_timestamps.windowed_cell_metrics": 1},
+            sort=[("event_timestamps.windowed_cell_metrics", -1)],
+        )
+        if latest:
+            ts = latest.get("event_timestamps", {}).get("windowed_cell_metrics")
+            if ts:
+                result["last_updated"] = ts.isoformat() + "Z"
+
+        # Query Feast feature server for sample cells
+        if FEAST_IP:
+            sample_cells = ["CELL_0001", "CELL_0010", "CELL_0020", "CELL_0030", "CELL_0040"]
+            feast_url = f"http://{FEAST_IP}:6566/get-online-features"
+            payload = {
+                "features": [
+                    "windowed_cell_metrics:avg_signal_strength_dbm",
+                    "windowed_cell_metrics:avg_throughput_mbps",
+                    "windowed_cell_metrics:avg_latency_ms",
+                    "windowed_cell_metrics:event_count",
+                    "windowed_cell_metrics:region",
+                ],
+                "entities": {"cell_id": sample_cells},
+            }
+
+            start_time = time.time()
+            resp = requests.post(feast_url, json=payload, timeout=5)
+            elapsed_ms = (time.time() - start_time) * 1000
+            result["retrieval_ms"] = round(elapsed_ms, 1)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                metadata = data.get("metadata", {})
+                features = metadata.get("feature_names", [])
+                results_list = data.get("results", [])
+
+                for i, cell_id in enumerate(sample_cells):
+                    row = {"cell_id": cell_id}
+                    for j, feat_name in enumerate(features):
+                        if j < len(results_list) and i < len(results_list[j].get("values", [])):
+                            row[feat_name] = results_list[j]["values"][i]
+                    result["sample_features"].append(row)
+
+                result["status"] = "healthy"
+            else:
+                result["status"] = "error"
+        else:
+            result["status"] = "not_configured"
+
+    except requests.exceptions.ConnectionError:
+        result["status"] = "unavailable"
+    except Exception as e:
+        result["status"] = "error"
+
+    return jsonify(result)
 
 
 if __name__ == "__main__":

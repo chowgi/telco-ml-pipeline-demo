@@ -17,13 +17,15 @@ echo "============================================================"
 echo ""
 
 # Get instance IPs from CloudFormation
-echo "[1/6] Getting instance IPs..."
+echo "[1/7] Getting instance IPs..."
 GENERATOR_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
   --query "Stacks[0].Outputs[?OutputKey=='GeneratorPublicIP'].OutputValue" --output text)
 FLINK_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
   --query "Stacks[0].Outputs[?OutputKey=='FlinkPublicIP'].OutputValue" --output text)
 MLFLOW_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
   --query "Stacks[0].Outputs[?OutputKey=='MLflowPublicIP'].OutputValue" --output text)
+FEAST_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
+  --query "Stacks[0].Outputs[?OutputKey=='FeastPublicIP'].OutputValue" --output text)
 GENERATOR_PRIVATE_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
   --query "Stacks[0].Outputs[?OutputKey=='GeneratorPrivateIP'].OutputValue" --output text)
 FLINK_PRIVATE_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
@@ -32,12 +34,13 @@ FLINK_PRIVATE_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME -
 echo "  Generator: $GENERATOR_IP (private: $GENERATOR_PRIVATE_IP)"
 echo "  Flink:     $FLINK_IP (private: $FLINK_PRIVATE_IP)"
 echo "  MLflow:    $MLFLOW_IP"
+echo "  Feast:     $FEAST_IP"
 echo ""
 
 # Ensure SSH access (update security group with current IP)
-echo "[2/6] Ensuring SSH access..."
+echo "[2/7] Ensuring SSH access..."
 MY_IP=$(curl -s --max-time 5 https://checkip.amazonaws.com)
-for SG_NAME in telco-ods-demo-pipeline-sg telco-ods-demo-kafka-sg telco-ods-demo-mlflow-sg; do
+for SG_NAME in telco-ods-demo-pipeline-sg telco-ods-demo-kafka-sg telco-ods-demo-mlflow-sg telco-ods-demo-feast-sg; do
   SG_ID=$(aws ec2 describe-security-groups --region $REGION \
     --filters "Name=tag:Name,Values=$SG_NAME" \
     --query "SecurityGroups[0].GroupId" --output text 2>/dev/null)
@@ -50,7 +53,7 @@ echo "  SSH allowed from $MY_IP"
 echo ""
 
 # Clear previous results from MongoDB
-echo "[3/6] Clearing previous results from MongoDB..."
+echo "[3/7] Clearing previous results from MongoDB..."
 ssh $SSH_OPTS ubuntu@$MLFLOW_IP "bash -c '
 source /opt/dashboard/env.sh
 /opt/mlflow/venv/bin/python3 -c \"
@@ -67,19 +70,28 @@ client.close()
 echo ""
 
 # Restart Flink (hard-kill required — PyFlink/Beam workers leave stale state after cancel)
-echo "[4/6] Restarting Flink stream processor..."
+echo "[4/7] Restarting Flink stream processor..."
 ssh $SSH_OPTS ubuntu@$FLINK_IP "/opt/flink-job/restart.sh"
 echo "  Flink restarted and job submitted"
 echo ""
 
 # Start generator (kills any existing process first)
-echo "[5/6] Starting data generator (~1k events/sec)..."
+echo "[5/7] Starting data generator (~1k events/sec)..."
 ssh $SSH_OPTS ubuntu@$GENERATOR_IP "/opt/telco-generator/start.sh"
 echo "  Generator started"
 echo ""
 
+# Ensure Feast materialization timer is active
+echo "[6/7] Ensuring Feast feature store is running..."
+ssh $SSH_OPTS ubuntu@$FEAST_IP "
+sudo systemctl start feast-serve feast-materialize.timer 2>/dev/null
+cd /opt/feast && source /opt/feast-env/bin/activate && source env.sh && python materialize.py 2>/dev/null
+echo '  Feast materialization triggered'
+" 2>/dev/null || true
+echo ""
+
 # Ensure dashboard is running on MLflow instance
-echo "[6/6] Ensuring dashboard is running..."
+echo "[7/7] Ensuring dashboard is running..."
 ssh $SSH_OPTS ubuntu@$MLFLOW_IP '
 if ! pgrep -f "app.py" > /dev/null 2>&1; then
   source /opt/dashboard/env.sh

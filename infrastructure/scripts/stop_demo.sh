@@ -22,6 +22,8 @@ FLINK_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region 
   --query "Stacks[0].Outputs[?OutputKey=='FlinkPublicIP'].OutputValue" --output text)
 MLFLOW_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
   --query "Stacks[0].Outputs[?OutputKey=='MLflowPublicIP'].OutputValue" --output text)
+FEAST_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
+  --query "Stacks[0].Outputs[?OutputKey=='FeastPublicIP'].OutputValue" --output text)
 
 # Kill the generator
 echo "[1/3] Stopping data generator..."

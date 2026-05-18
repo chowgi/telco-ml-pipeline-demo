@@ -311,6 +311,13 @@
         </div>
     </div>
 
+    <div class="service-links" id="serviceLinks" style="background: #161b22; border-bottom: 1px solid #30363d; padding: 8px 32px; display: flex; align-items: center; gap: 20px; font-size: 12px;">
+        <span style="color: #484f58;">Services:</span>
+        <a href="/details" style="color: #58a6ff; text-decoration: none;">Architecture & Details</a>
+        <a id="linkFlink" href="#" target="_blank" style="color: #58a6ff; text-decoration: none; display: none;">Flink UI</a>
+        <a id="linkMlflow" href="#" target="_blank" style="color: #58a6ff; text-decoration: none;">MLflow</a>
+    </div>
+
     <div class="container">
         <!-- KPIs -->
         <div class="kpi-row">
@@ -358,59 +365,44 @@
             </div>
         </div>
 
-        <!-- Architecture -->
-        <div class="architecture">
-            <h3>Pipeline Architecture</h3>
-            <div class="arch-diagram"><span class="highlight">Data Generator</span> (EC2, 17k+ eps)
-        |
-        | Confluent Kafka (single broker, 12 partitions)
-        v
-<span class="highlight">Apache Flink</span> (PyFlink — 5-min sliding window, 30s slide, per cell)
-        |
-        | pymongo insert (per cell, every 30s)
-        v
-<span class="green">MongoDB Atlas</span> — <span class="green">windowed_network_metrics</span> (ODS)
-        |
-        | <span class="orange">Atlas Database Trigger</span> (fires on every insert)
-        v
-<span class="orange">MLflow Model Serving</span> (RandomForest classifier)
-        |
-        | prediction written back
-        v
-<span class="green">MongoDB Atlas</span> — <span class="green">network_health_predictions</span>
-        |
-        v
-<span class="red">This Dashboard</span> (polling every 5s)</div>
-            <div class="tech-pills">
-                <span class="pill atlas">MongoDB Atlas (ODS)</span>
-                <span class="pill atlas">Atlas Triggers</span>
-                <span class="pill atlas">Change Streams</span>
-                <span class="pill kafka">Apache Kafka</span>
-                <span class="pill kafka">PyFlink 1.18</span>
-                <span class="pill ml">MLflow</span>
-                <span class="pill ml">scikit-learn</span>
-                <span class="pill">Sliding Windows</span>
-                <span class="pill">AWS EC2</span>
+        <!-- Feature Store -->
+        <div class="card" id="feastPanel" style="margin-bottom: 24px;">
+            <h3 style="display: flex; align-items: center; gap: 10px;">
+                Feature Store (MongoDB Online Store)
+                <span class="pill atlas" style="font-size: 10px;">Feast</span>
+                <span id="feastStatus" style="margin-left: auto; font-size: 11px; color: #484f58;">Loading...</span>
+            </h3>
+            <div class="kpi-row" style="grid-template-columns: repeat(3, 1fr); margin-top: 16px; margin-bottom: 16px;">
+                <div class="kpi-card">
+                    <div class="kpi-value" id="feast-cells" style="font-size: 28px;">-</div>
+                    <div class="kpi-label">Cells Materialized</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="feast-latency" style="font-size: 28px;">-</div>
+                    <div class="kpi-label">Retrieval Latency (ms)</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="feast-updated" style="font-size: 28px;">-</div>
+                    <div class="kpi-label">Last Materialized</div>
+                </div>
             </div>
+            <table style="width: 100%; font-size: 12px; border-collapse: collapse;">
+                <thead>
+                    <tr style="border-bottom: 1px solid #30363d; color: #8b949e;">
+                        <th style="text-align: left; padding: 8px 4px;">Cell ID</th>
+                        <th style="text-align: right; padding: 8px 4px;">Signal (dBm)</th>
+                        <th style="text-align: right; padding: 8px 4px;">Throughput (Mbps)</th>
+                        <th style="text-align: right; padding: 8px 4px;">Latency (ms)</th>
+                        <th style="text-align: right; padding: 8px 4px;">Events</th>
+                        <th style="text-align: left; padding: 8px 4px;">Region</th>
+                    </tr>
+                </thead>
+                <tbody id="feastTable">
+                    <tr><td colspan="6" style="padding: 16px; color: #484f58; text-align: center;">Waiting for data...</td></tr>
+                </tbody>
+            </table>
         </div>
 
-        <!-- Description -->
-        <div class="card" style="margin-bottom: 24px;">
-            <h3>What You're Seeing</h3>
-            <p style="font-size: 13px; line-height: 1.7; color: #8b949e; margin-top: 8px;">
-                This dashboard shows a live end-to-end ML pipeline built on <strong style="color:#3fb950;">MongoDB Atlas as the Operational Data Store</strong>.
-                50 simulated cell towers generate network telemetry at 17,000+ events/second into Kafka.
-                Apache Flink (PyFlink) applies a 5-minute sliding window with 30-second slides per cell tower, computing rolling statistics (avg, min, max, p95) and writing to Atlas every 30 seconds.
-                An <strong style="color:#d29922;">Atlas Database Trigger</strong> fires on every insert, calls an MLflow model to classify network health
-                (excellent / good / poor), and writes the prediction back to Atlas — all within milliseconds, zero external orchestration.
-            </p>
-            <p style="font-size: 13px; line-height: 1.7; color: #8b949e; margin-top: 12px;">
-                <strong style="color:#c9d1d9;">ODS Requirements Demonstrated:</strong>
-                Real-time ingestion (FR-3), schema flexibility with nested stats (FR-5), API-based access (FR-9),
-                ML feature enablement (FR-11), event-driven operational workflows via Triggers (FR-12),
-                operational scope with raw data in Kafka and aggregates in ODS (FR-14).
-            </p>
-        </div>
     </div>
 
     <div class="footer">
@@ -595,14 +587,79 @@
                 updateDashboard(data);
                 updateLiveBadge(data.pipeline_active);
                 if (data.demo_state) updateDemoStatus(data.demo_state);
+                if (data.links) updateServiceLinks(data.links);
             } catch (e) {
                 console.error('Fetch error:', e);
             }
         }
 
+        function updateServiceLinks(links) {
+            const flinkLink = document.getElementById('linkFlink');
+            const mlflowLink = document.getElementById('linkMlflow');
+            if (links.flink_public_ip) {
+                flinkLink.href = 'http://' + links.flink_public_ip + ':8081';
+                flinkLink.style.display = '';
+            }
+            mlflowLink.href = 'http://' + window.location.hostname + ':5002';
+        }
+
+        async function fetchFeast() {
+            try {
+                const resp = await fetch('/api/feast');
+                const data = await resp.json();
+                updateFeastPanel(data);
+            } catch (e) {
+                console.error('Feast fetch error:', e);
+            }
+        }
+
+        function updateFeastPanel(data) {
+            const statusEl = document.getElementById('feastStatus');
+            if (data.status === 'healthy') {
+                statusEl.innerHTML = '<span style="color:#3fb950;">● Online</span>';
+            } else if (data.status === 'unavailable') {
+                statusEl.innerHTML = '<span style="color:#484f58;">● Offline</span>';
+            } else {
+                statusEl.innerHTML = '<span style="color:#d29922;">● ' + data.status + '</span>';
+            }
+
+            document.getElementById('feast-cells').textContent = data.cells_materialized || '-';
+            document.getElementById('feast-latency').textContent = data.retrieval_ms ? data.retrieval_ms.toFixed(1) : '-';
+
+            if (data.last_updated) {
+                const ago = Math.round((Date.now() - new Date(data.last_updated).getTime()) / 1000);
+                const agoStr = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago/60)}m ago` : `${Math.round(ago/3600)}h ago`;
+                document.getElementById('feast-updated').textContent = agoStr;
+                document.getElementById('feast-updated').style.color = ago < 300 ? '#3fb950' : '#d29922';
+            } else {
+                document.getElementById('feast-updated').textContent = '-';
+            }
+
+            const table = document.getElementById('feastTable');
+            if (data.sample_features && data.sample_features.length > 0) {
+                table.innerHTML = data.sample_features.map(row => {
+                    const signal = row.avg_signal_strength_dbm != null ? row.avg_signal_strength_dbm.toFixed(1) : '-';
+                    const throughput = row.avg_throughput_mbps != null ? row.avg_throughput_mbps.toFixed(1) : '-';
+                    const latency = row.avg_latency_ms != null ? row.avg_latency_ms.toFixed(1) : '-';
+                    const events = row.event_count != null ? row.event_count : '-';
+                    const region = row.region || '-';
+                    return `<tr style="border-bottom: 1px solid #21262d;">
+                        <td style="padding: 6px 4px; color: #c9d1d9;">${row.cell_id}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: #8b949e;">${signal}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: #8b949e;">${throughput}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: #8b949e;">${latency}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: #8b949e;">${events}</td>
+                        <td style="padding: 6px 4px; color: #8b949e;">${region}</td>
+                    </tr>`;
+                }).join('');
+            }
+        }
+
         initCharts();
         fetchAndUpdate();
+        fetchFeast();
         setInterval(fetchAndUpdate, 5000);
+        setInterval(fetchFeast, 10000);
     </script>
 </body>
 </html>

@@ -170,6 +170,29 @@ Resources:
         - Key: Name
           Value: telco-ods-demo-mlflow-sg
 
+  FeastSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Feast feature server security group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSSHCidr
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: 6566
+          ToPort: 6566
+          CidrIp: 10.0.0.0/16
+          Description: Feast feature server (VPC internal)
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-feast-sg
+
   # --- EC2 Instances ---
   KafkaInstance:
     Type: AWS::EC2::Instance
@@ -268,7 +291,7 @@ Resources:
 
   MLflowInstance:
     Type: AWS::EC2::Instance
-    DependsOn: [FlinkInstance, GeneratorInstance]
+    DependsOn: [FlinkInstance, GeneratorInstance, FeastInstance]
     Properties:
       ImageId: !Ref UbuntuAMI
       InstanceType: t3.large
@@ -308,6 +331,8 @@ Resources:
           export SSH_KEY=/opt/dashboard/bennyk_aws_key.pem
           export GENERATOR_IP=${GeneratorInstance.PrivateIp}
           export FLINK_IP=${FlinkInstance.PrivateIp}
+          export FEAST_IP=${FeastInstance.PrivateIp}
+          export FLINK_PUBLIC_IP=${FlinkInstance.PublicIp}
           DASHEOF
 
           chown -R ubuntu:ubuntu /opt/mlflow /opt/dashboard
@@ -490,6 +515,46 @@ Resources:
         - Key: Name
           Value: telco-ods-demo-generator
 
+  FeastInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAMI
+      InstanceType: t3.medium
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref FeastSG
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > /var/log/feast-setup.log 2>&1
+
+          apt-get update
+          apt-get install -y python3-pip python3-venv
+
+          mkdir -p /opt/feast
+          cd /opt/feast
+
+          python3 -m venv /opt/feast-env
+          source /opt/feast-env/bin/activate
+          pip install "feast[mongodb]>=0.37.0" "pymongo[srv]" pandas python-dotenv
+
+          chown -R ubuntu:ubuntu /opt/feast /opt/feast-env
+
+          touch /var/log/feast-materialize.log
+          chown ubuntu:ubuntu /var/log/feast-materialize.log
+
+          echo "FEAST_READY" > /tmp/feast-status
+      Tags:
+        - Key: Name
+          Value: telco-ods-demo-feast
+
   # --- IAM for S3 access (Flink instance needs to download binaries) ---
   EC2Role:
     Type: AWS::IAM::Role
@@ -562,6 +627,14 @@ Outputs:
     Value: !Sub http://${MLflowInstance.PublicIp}:8050
     Description: Live dashboard
 
+  FeastPublicIP:
+    Value: !GetAtt FeastInstance.PublicIp
+    Description: Feast feature server public IP
+
+  FeastPrivateIP:
+    Value: !GetAtt FeastInstance.PrivateIp
+    Description: Feast feature server private IP
+
   AtlasWhitelistIPs:
-    Value: !Sub "${KafkaInstance.PublicIp}, ${GeneratorInstance.PublicIp}, ${FlinkInstance.PublicIp}, ${MLflowInstance.PublicIp}"
+    Value: !Sub "${KafkaInstance.PublicIp}, ${GeneratorInstance.PublicIp}, ${FlinkInstance.PublicIp}, ${MLflowInstance.PublicIp}, ${FeastInstance.PublicIp}"
     Description: IPs to whitelist in MongoDB Atlas
