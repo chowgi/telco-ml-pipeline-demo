@@ -25,31 +25,31 @@ MLFLOW_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region
 
 # Kill the generator
 echo "[1/3] Stopping data generator..."
-ssh $SSH_OPTS ubuntu@$GENERATOR_IP "bash -c 'pkill -f generator.py || true'" 2>/dev/null
+ssh $SSH_OPTS ubuntu@$GENERATOR_IP "sudo pkill -f generator.py || true" 2>/dev/null
 echo "  Generator stopped"
 echo ""
 
 # Hard-stop Flink (must be killed, not cancelled — stale state after cancel)
 echo "[2/3] Stopping Flink..."
-ssh $SSH_OPTS ubuntu@$FLINK_IP "bash -c 'sudo /opt/flink-job/stop.sh'" 2>/dev/null
+ssh $SSH_OPTS ubuntu@$FLINK_IP "sudo /opt/flink-job/stop.sh" 2>/dev/null
 echo "  Flink stopped"
 echo ""
 
 # Clear MongoDB collections
 echo "[3/3] Clearing MongoDB collections..."
-ssh $SSH_OPTS ubuntu@$MLFLOW_IP "bash -c '
-export \$(cat /opt/mlflow/.env | xargs)
-/opt/mlflow/venv/bin/python3 -c \"
+ssh $SSH_OPTS ubuntu@$MLFLOW_IP '
+source /opt/dashboard/env.sh
+/opt/mlflow/venv/bin/python3 -c "
 from pymongo import MongoClient
 import os
-client = MongoClient(os.environ[\\\"MONGODB_URI\\\"])
-db = client[\\\"ods_demo_db\\\"]
+client = MongoClient(os.environ[\"MONGODB_URI\"])
+db = client[\"ods_demo_db\"]
 p = db.network_health_predictions.delete_many({})
 w = db.windowed_network_metrics.delete_many({})
-print(f\\\"  Cleared {p.deleted_count} predictions, {w.deleted_count} windowed metrics\\\")
+print(f\"  Cleared {p.deleted_count} predictions, {w.deleted_count} windowed metrics\")
 client.close()
-\"
-'" 2>/dev/null
+"
+' 2>/dev/null
 echo ""
 
 echo "============================================================"

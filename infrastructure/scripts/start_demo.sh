@@ -68,29 +68,29 @@ echo ""
 
 # Restart Flink (hard-kill required — PyFlink/Beam workers leave stale state after cancel)
 echo "[4/6] Restarting Flink stream processor..."
-ssh $SSH_OPTS ubuntu@$FLINK_IP "bash -c 'sudo /opt/flink-job/restart.sh'"
+ssh $SSH_OPTS ubuntu@$FLINK_IP "sudo /opt/flink-job/restart.sh"
 echo "  Flink restarted and job submitted"
 echo ""
 
 # Start generator (kills any existing process first)
 echo "[5/6] Starting data generator (~1k events/sec)..."
-ssh $SSH_OPTS ubuntu@$GENERATOR_IP "bash -c 'sudo /opt/telco-generator/start.sh'"
+ssh $SSH_OPTS ubuntu@$GENERATOR_IP "sudo /opt/telco-generator/start.sh"
 echo "  Generator started"
 echo ""
 
 # Ensure dashboard is running on MLflow instance
 echo "[6/6] Ensuring dashboard is running..."
-ssh $SSH_OPTS ubuntu@$MLFLOW_IP "bash -c '
-if ! pgrep -f \"app.py\" > /dev/null 2>&1; then
+ssh $SSH_OPTS ubuntu@$MLFLOW_IP '
+if ! pgrep -f "app.py" > /dev/null 2>&1; then
   source /opt/dashboard/env.sh
   cd /opt/dashboard
   nohup /opt/mlflow/venv/bin/python app.py >> /var/log/dashboard.log 2>&1 &
   sleep 2
-  echo \"  Dashboard started\"
+  echo "  Dashboard started"
 else
-  echo \"  Dashboard already running\"
+  echo "  Dashboard already running"
 fi
-'" 2>/dev/null || true
+' 2>/dev/null || true
 echo ""
 
 echo "============================================================"
