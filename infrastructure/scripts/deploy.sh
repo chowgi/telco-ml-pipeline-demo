@@ -151,18 +151,16 @@ done
 pkill -f "flink_job.py" || true
 sleep 2
 
-# Ensure cluster is running (via systemd so it runs as ubuntu)
-if ! /opt/flink/bin/flink list 2>&1 | grep -q "Running\|No running"; then
-  sudo systemctl restart flink
-  sleep 5
-fi
+# Always restart cluster to release direct buffer memory (Beam/gRPC leaks on cancel)
+sudo systemctl restart flink
+sleep 5
 
 # Submit job
 cd /opt/flink-job
 source /opt/flink-env/bin/activate
 export $(cat /opt/flink-job-config.env | xargs)
 /opt/flink/bin/flink run -py flink_job.py -pyexec /opt/flink-env/bin/python3 >> /var/log/flink-job.log 2>&1 &
-sleep 5
+sleep 8
 RUNNING=$(/opt/flink/bin/flink list -r 2>/dev/null | grep -c "RUNNING" || echo "0")
 echo "Flink: $RUNNING running"
 SCRIPT
