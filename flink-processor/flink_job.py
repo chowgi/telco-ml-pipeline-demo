@@ -182,6 +182,8 @@ class CellWindowProcessor(KeyedProcessFunction):
         self._state.update(json.dumps(new_accumulator_state()))
         fire_time = timestamp + EMIT_INTERVAL_MS
         ctx.timer_service().register_processing_time_timer(fire_time)
+        # PyFlink requires on_timer to be a generator
+        return []
 
 
 def main():
