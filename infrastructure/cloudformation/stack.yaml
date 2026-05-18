@@ -147,6 +147,11 @@ Resources:
           CidrIp: !Ref AllowedSSHCidr
           Description: SSH
         - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.0.0.0/16
+          Description: SSH from dashboard (intra-VPC)
+        - IpProtocol: tcp
           FromPort: 8081
           ToPort: 8081
           CidrIp: !Ref AllowedSSHCidr
@@ -179,6 +184,11 @@ Resources:
           ToPort: 5003
           CidrIp: 0.0.0.0/0
           Description: MLflow model serving
+        - IpProtocol: tcp
+          FromPort: 8050
+          ToPort: 8050
+          CidrIp: 0.0.0.0/0
+          Description: Dashboard
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
