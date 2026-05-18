@@ -151,16 +151,19 @@ def start_demo():
             db.windowed_network_metrics.delete_many({})
             demo_state["message"] = "Starting data generator..."
 
-            # Ensure Flink job is running (submit only if no job active)
+            # Cancel any existing Flink job and submit fresh (avoids Kafka backlog)
             if FLINK_IP:
-                ok, out = run_ssh(FLINK_IP, "/opt/flink/bin/flink list -r 2>/dev/null")
-                if ok and "RUNNING" not in out:
-                    run_ssh(FLINK_IP, (
-                        "source /opt/flink-env/bin/activate && "
-                        "export $(cat /opt/flink-job-config.env | xargs) && "
-                        "/opt/flink/bin/flink run -py /opt/flink-job/flink_job.py "
-                        "-pyexec /opt/flink-env/bin/python3 -d 2>&1 | grep -v WARNING"
-                    ))
+                run_ssh(FLINK_IP, (
+                    "/opt/flink/bin/flink list -r 2>/dev/null | grep -oP '[0-9a-f]{32}' | "
+                    "while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done"
+                ))
+                time.sleep(3)
+                run_ssh(FLINK_IP, (
+                    "source /opt/flink-env/bin/activate && "
+                    "export $(cat /opt/flink-job-config.env | xargs) && "
+                    "/opt/flink/bin/flink run -py /opt/flink-job/flink_job.py "
+                    "-pyexec /opt/flink-env/bin/python3 -d 2>&1 | grep -v WARNING"
+                ))
 
             # Start generator
             if GENERATOR_IP:
@@ -194,7 +197,12 @@ def stop_demo():
             if GENERATOR_IP:
                 run_ssh(GENERATOR_IP, "pkill -f generator.py 2>/dev/null")
 
-            # Wait for Flink to flush remaining data, then clear
+            if FLINK_IP:
+                run_ssh(FLINK_IP, (
+                    "/opt/flink/bin/flink list -r 2>/dev/null | grep -oP '[0-9a-f]{32}' | "
+                    "while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done"
+                ))
+
             time.sleep(5)
             db.network_health_predictions.delete_many({})
             db.windowed_network_metrics.delete_many({})
