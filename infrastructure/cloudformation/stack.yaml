@@ -368,7 +368,7 @@ Resources:
           [Service]
           Type=simple
           WorkingDirectory=/opt/mlflow
-          ExecStart=/opt/mlflow/venv/bin/mlflow server --host 0.0.0.0 --port 5002 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /opt/mlflow/artifacts
+          ExecStart=/opt/mlflow/venv/bin/mlflow server --host 0.0.0.0 --port 5002 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /opt/mlflow/artifacts --allowed-host-headers all
           Restart=on-failure
           [Install]
           WantedBy=multi-user.target
