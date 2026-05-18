@@ -153,9 +153,11 @@ class CellWindowProcessor(KeyedProcessFunction):
         acc = add_event_to_state(acc, event)
         self._state.update(json.dumps(acc))
 
-        # Register timer on first event
+        # Register timer on first event — stagger by cell_id hash so emissions spread over the interval
         if not self._timer_state.value():
-            fire_time = ctx.timer_service().current_processing_time() + EMIT_INTERVAL_MS
+            cell_id = ctx.get_current_key()
+            offset_ms = (hash(cell_id) % EMIT_INTERVAL_MS)
+            fire_time = ctx.timer_service().current_processing_time() + offset_ms
             ctx.timer_service().register_processing_time_timer(fire_time)
             self._timer_state.update(True)
 
