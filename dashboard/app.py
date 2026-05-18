@@ -202,8 +202,12 @@ def stop_demo():
                     "while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done"
                 ))
 
+            # Clear data so dashboard shows clean state
+            db.network_health_predictions.delete_many({})
+            db.windowed_network_metrics.delete_many({})
+
             demo_state["status"] = "stopped"
-            demo_state["message"] = "Pipeline stopped"
+            demo_state["message"] = "Pipeline stopped — data cleared"
         except Exception as e:
             demo_state["status"] = "error"
             demo_state["message"] = str(e)[:200]
