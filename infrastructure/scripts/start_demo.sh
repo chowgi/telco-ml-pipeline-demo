@@ -68,13 +68,13 @@ echo ""
 
 # Restart Flink (hard-kill required — PyFlink/Beam workers leave stale state after cancel)
 echo "[4/6] Restarting Flink stream processor..."
-ssh $SSH_OPTS ubuntu@$FLINK_IP "sudo /opt/flink-job/restart.sh"
+ssh $SSH_OPTS ubuntu@$FLINK_IP "/opt/flink-job/restart.sh"
 echo "  Flink restarted and job submitted"
 echo ""
 
 # Start generator (kills any existing process first)
 echo "[5/6] Starting data generator (~1k events/sec)..."
-ssh $SSH_OPTS ubuntu@$GENERATOR_IP "sudo /opt/telco-generator/start.sh"
+ssh $SSH_OPTS ubuntu@$GENERATOR_IP "/opt/telco-generator/start.sh"
 echo "  Generator started"
 echo ""
 

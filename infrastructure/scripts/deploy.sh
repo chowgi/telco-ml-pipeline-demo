@@ -139,12 +139,20 @@ echo "  Flink job uploaded"
 ssh $SSH_OPTS ubuntu@$FLINK_IP 'cat > /opt/flink-job/restart.sh << '\''SCRIPT'\''
 #!/bin/bash
 set -e
-pkill -9 -f "org.apache.flink" || true
-pkill -9 -f "flink_job.py" || true
+# Cancel existing jobs
+for JOB_ID in $(/opt/flink/bin/flink list -r 2>/dev/null | grep -oP "[a-f0-9]{32}"); do
+  /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null || true
+done
+pkill -f "flink_job.py" || true
 sleep 2
-rm -f /opt/flink/log/*.pid 2>/dev/null || true
-/opt/flink/bin/start-cluster.sh
-sleep 5
+
+# Ensure cluster is running (via systemd so it runs as ubuntu)
+if ! /opt/flink/bin/flink list 2>&1 | grep -q "Running\|No running"; then
+  sudo systemctl restart flink
+  sleep 5
+fi
+
+# Submit job
 cd /opt/flink-job
 source /opt/flink-env/bin/activate
 export $(cat /opt/flink-job-config.env | xargs)
@@ -157,10 +165,12 @@ chmod +x /opt/flink-job/restart.sh' 2>/dev/null
 
 ssh $SSH_OPTS ubuntu@$FLINK_IP 'cat > /opt/flink-job/stop.sh << '\''SCRIPT'\''
 #!/bin/bash
-pkill -9 -f "org.apache.flink" || true
-pkill -9 -f "flink_job.py" || true
-rm -f /opt/flink/log/*.pid 2>/dev/null || true
-echo "Flink stopped"
+# Cancel all running Flink jobs but leave the cluster up
+for JOB_ID in $(/opt/flink/bin/flink list -r 2>/dev/null | grep -oP "[a-f0-9]{32}"); do
+  /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null
+done
+pkill -f "flink_job.py" || true
+echo "Flink jobs cancelled (cluster still running)"
 SCRIPT
 chmod +x /opt/flink-job/stop.sh' 2>/dev/null
 echo "  Flink helper scripts created"

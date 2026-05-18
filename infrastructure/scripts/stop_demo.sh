@@ -25,13 +25,13 @@ MLFLOW_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region
 
 # Kill the generator
 echo "[1/3] Stopping data generator..."
-ssh $SSH_OPTS ubuntu@$GENERATOR_IP "sudo pkill -f generator.py || true" 2>/dev/null
+ssh $SSH_OPTS ubuntu@$GENERATOR_IP "pkill -f generator.py || true" 2>/dev/null
 echo "  Generator stopped"
 echo ""
 
 # Hard-stop Flink (must be killed, not cancelled — stale state after cancel)
 echo "[2/3] Stopping Flink..."
-ssh $SSH_OPTS ubuntu@$FLINK_IP "sudo /opt/flink-job/stop.sh" 2>/dev/null
+ssh $SSH_OPTS ubuntu@$FLINK_IP "/opt/flink-job/stop.sh" 2>/dev/null
 echo "  Flink stopped"
 echo ""
 
