@@ -148,22 +148,9 @@ def start_demo():
             db.windowed_network_metrics.delete_many({})
             demo_state["message"] = "Starting data generator..."
 
-            # Kill Flink cluster and restart fresh (PyFlink needs clean task managers)
+            # Restart Flink cluster and submit fresh job
             if FLINK_IP:
-                run_ssh(FLINK_IP, (
-                    "ps aux | grep org.apache.flink | grep -v grep | "
-                    "awk '{print $2}' | xargs -r kill -9 2>/dev/null; "
-                    "sleep 2; "
-                    "rm -f /opt/flink/log/*.pid /tmp/flink-*.pid; "
-                    "/opt/flink/bin/start-cluster.sh 2>/dev/null"
-                ))
-                time.sleep(5)
-                run_ssh(FLINK_IP, (
-                    "source /opt/flink-env/bin/activate && "
-                    "export $(cat /opt/flink-job-config.env | xargs) && "
-                    "/opt/flink/bin/flink run -py /opt/flink-job/flink_job.py "
-                    "-pyexec /opt/flink-env/bin/python3 -d 2>&1 | grep -v WARNING"
-                ))
+                run_ssh(FLINK_IP, "/opt/flink-job/restart.sh", timeout=30)
 
             # Start generator
             if GENERATOR_IP:
@@ -191,10 +178,7 @@ def stop_demo():
                 run_ssh(GENERATOR_IP, "pkill -f generator.py 2>/dev/null")
 
             if FLINK_IP:
-                run_ssh(FLINK_IP, (
-                    "ps aux | grep org.apache.flink | grep -v grep | "
-                    "awk '{print $2}' | xargs -r kill -9 2>/dev/null"
-                ))
+                run_ssh(FLINK_IP, "/opt/flink-job/stop.sh")
 
             time.sleep(3)
             db.network_health_predictions.delete_many({})
