@@ -124,6 +124,11 @@ done
 echo ""
 echo "[4/5] Uploading code and configuring..."
 
+# Fix ownership (userdata runs as root, scp runs as ubuntu)
+ssh $SSH_OPTS ubuntu@$FLINK_IP "sudo chown -R ubuntu:ubuntu /opt/flink-job /opt/flink-env" 2>/dev/null
+ssh $SSH_OPTS ubuntu@$MLFLOW_IP "sudo chown -R ubuntu:ubuntu /opt/mlflow /opt/dashboard" 2>/dev/null
+ssh $SSH_OPTS ubuntu@$GENERATOR_IP "sudo chown -R ubuntu:ubuntu /opt/telco-generator" 2>/dev/null
+
 # Upload Flink job
 scp $SSH_OPTS -r "$PROJECT_ROOT/flink-processor/"* ubuntu@${FLINK_IP}:/opt/flink-job/ 2>/dev/null
 ssh $SSH_OPTS ubuntu@$FLINK_IP "source /opt/flink-env/bin/activate && cd /opt/flink-job && pip install -r requirements.txt -q 2>/dev/null" 2>/dev/null

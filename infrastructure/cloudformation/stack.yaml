@@ -312,7 +312,7 @@ Resources:
 
           chown -R ubuntu:ubuntu /opt/mlflow /opt/dashboard
 
-          # MLflow tracking service (MLFLOW_ALLOWED_HOSTS=all bypasses DNS rebinding check)
+          # MLflow tracking service (--allowed-hosts * disables DNS rebinding check for demo access)
           cat > /etc/systemd/system/mlflow-tracking.service << SVCEOF
           [Unit]
           Description=MLflow Tracking Server
@@ -321,8 +321,7 @@ Resources:
           Type=simple
           User=ubuntu
           WorkingDirectory=/opt/mlflow
-          Environment=MLFLOW_ALLOWED_HOSTS=all
-          ExecStart=/opt/mlflow/venv/bin/mlflow server --host 0.0.0.0 --port 5002 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /opt/mlflow/artifacts
+          ExecStart=/opt/mlflow/venv/bin/mlflow server --host 0.0.0.0 --port 5002 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /opt/mlflow/artifacts --allowed-hosts "*"
           Restart=on-failure
           [Install]
           WantedBy=multi-user.target
