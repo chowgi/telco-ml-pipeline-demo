@@ -34,7 +34,7 @@ FAIL=0
 check() {
   local name=$1
   local cmd=$2
-  printf "  %-35s" "$name..."
+  printf "  %-40s" "$name..."
   if eval "$cmd" > /dev/null 2>&1; then
     echo "PASS"
     PASS=$((PASS + 1))
@@ -54,6 +54,35 @@ echo "[Services]"
 check "MLflow tracking (5002)" "curl -sf --max-time 5 http://$MLFLOW_IP:5002/"
 check "MLflow serving (5003)" "curl -sf --max-time 5 http://$MLFLOW_IP:5003/version"
 check "Flink Web UI (8081)" "curl -sf --max-time 5 http://$FLINK_IP:8081/overview"
+check "Dashboard (8050)" "curl -sf --max-time 5 http://$MLFLOW_IP:8050/"
+
+echo ""
+echo "[Flink Job Status]"
+# Check Flink REST API for running jobs
+FLINK_JOBS=$(curl -sf --max-time 5 "http://$FLINK_IP:8081/jobs/overview" 2>/dev/null || echo "")
+if [ -n "$FLINK_JOBS" ]; then
+  RUNNING_COUNT=$(echo "$FLINK_JOBS" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    running = [j for j in data.get('jobs', []) if j.get('state') == 'RUNNING']
+    print(len(running))
+except:
+    print(0)
+" 2>/dev/null || echo "0")
+  printf "  %-40s" "Flink running jobs..."
+  if [ "$RUNNING_COUNT" -gt "0" ]; then
+    echo "PASS ($RUNNING_COUNT job(s))"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL (no running jobs)"
+    FAIL=$((FAIL + 1))
+  fi
+else
+  printf "  %-40s" "Flink running jobs..."
+  echo "FAIL (API unreachable)"
+  FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "[MLflow Inference Test]"
@@ -62,11 +91,11 @@ INFERENCE_RESULT=$(curl -sf --max-time 10 -X POST http://$MLFLOW_IP:5003/invocat
   -d '{"dataframe_records": [{"signal_strength_dbm": -65, "throughput_mbps": 75, "latency_ms": 35, "call_drop_rate_percent": 0.8, "packet_loss_percent": 0.8, "jitter_ms": 2.5}]}' 2>/dev/null || echo "")
 
 if [ -n "$INFERENCE_RESULT" ]; then
-  printf "  %-35s" "Inference endpoint..."
+  printf "  %-40s" "Inference endpoint..."
   echo "PASS ($INFERENCE_RESULT)"
   PASS=$((PASS + 1))
 else
-  printf "  %-35s" "Inference endpoint..."
+  printf "  %-40s" "Inference endpoint..."
   echo "FAIL (no response)"
   FAIL=$((FAIL + 1))
 fi

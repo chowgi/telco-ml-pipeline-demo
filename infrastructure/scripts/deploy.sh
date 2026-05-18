@@ -1,5 +1,6 @@
 #!/bin/bash
-# Deploy the full Telco ODS streaming ML pipeline demo via CloudFormation
+# Deploy the full Telco ODS streaming ML pipeline demo via CloudFormation.
+# Sets up all 4 EC2 instances, deploys code, creates helper scripts, and starts the pipeline.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,11 +11,12 @@ REGION="ap-southeast-2"
 
 echo "============================================================"
 echo "Telco ODS - Autonomous Networks ML Pipeline Demo"
+echo "  Apache Flink (PyFlink 1.18) | ~1k eps | 30s emission"
 echo "============================================================"
 echo ""
 
 # Prerequisites check
-echo "[1/8] Checking prerequisites..."
+echo "[1/9] Checking prerequisites..."
 for cmd in aws ssh scp; do
   if ! command -v $cmd &> /dev/null; then
     echo "Error: $cmd is required but not installed."
@@ -61,16 +63,18 @@ if [ -z "$KEY_PAIR_NAME" ]; then
   echo ""
   echo "Error: Set KEY_PAIR_NAME to your EC2 key pair name in ap-southeast-2"
   echo "  export KEY_PAIR_NAME=your-key-pair"
-  echo "  export SSH_KEY_PATH=~/.ssh/your-key.pem"
+  echo "  export SSH_KEY_PATH=./bennyk_aws_key.pem"
   exit 1
 fi
 
-SSH_KEY_PATH="${SSH_KEY_PATH:-~/.ssh/${KEY_PAIR_NAME}.pem}"
+SSH_KEY_PATH="${SSH_KEY_PATH:-$PROJECT_ROOT/${KEY_PAIR_NAME}.pem}"
 
 if [ ! -f "$SSH_KEY_PATH" ]; then
   # Check project directory
   if [ -f "$PROJECT_ROOT/${KEY_PAIR_NAME}.pem" ]; then
     SSH_KEY_PATH="$PROJECT_ROOT/${KEY_PAIR_NAME}.pem"
+  elif [ -f "$PROJECT_ROOT/bennyk_aws_key.pem" ]; then
+    SSH_KEY_PATH="$PROJECT_ROOT/bennyk_aws_key.pem"
   else
     echo "Error: SSH key not found at $SSH_KEY_PATH"
     echo "  Set SSH_KEY_PATH to the correct .pem file location"
@@ -81,9 +85,11 @@ fi
 echo "  Key pair: $KEY_PAIR_NAME"
 echo "  SSH key:  $SSH_KEY_PATH"
 
+SSH_OPTS="-o ConnectTimeout=15 -o ServerAliveInterval=5 -o StrictHostKeyChecking=no -i $SSH_KEY_PATH"
+
 # Deploy CloudFormation stack
 echo ""
-echo "[2/8] Deploying CloudFormation stack..."
+echo "[2/9] Deploying CloudFormation stack..."
 
 CFN_PARAMS="KeyPairName=$KEY_PAIR_NAME AllowedSSHCidr=$ALLOWED_SSH_CIDR"
 
@@ -103,7 +109,7 @@ echo "  Stack deployed successfully."
 
 # Get outputs
 echo ""
-echo "[3/8] Retrieving instance IPs..."
+echo "[3/9] Retrieving instance IPs..."
 
 get_output() {
   aws cloudformation describe-stacks \
@@ -116,22 +122,24 @@ get_output() {
 KAFKA_PRIVATE_IP=$(get_output "KafkaPrivateIP")
 KAFKA_PUBLIC_IP=$(get_output "KafkaPublicIP")
 GENERATOR_IP=$(get_output "GeneratorPublicIP")
+GENERATOR_PRIVATE_IP=$(get_output "GeneratorPrivateIP")
 FLINK_IP=$(get_output "FlinkPublicIP")
+FLINK_PRIVATE_IP=$(get_output "FlinkPrivateIP")
 MLFLOW_IP=$(get_output "MLflowPublicIP")
 
 echo "  Kafka:     $KAFKA_PUBLIC_IP (private: $KAFKA_PRIVATE_IP)"
-echo "  Generator: $GENERATOR_IP"
-echo "  Flink:     $FLINK_IP"
+echo "  Generator: $GENERATOR_IP (private: $GENERATOR_PRIVATE_IP)"
+echo "  Flink:     $FLINK_IP (private: $FLINK_PRIVATE_IP)"
 echo "  MLflow:    $MLFLOW_IP"
 
 # Wait for instances
 echo ""
-echo "[4/8] Waiting for instances to initialize (90s)..."
+echo "[4/9] Waiting for instances to initialize (90s)..."
 sleep 90
 
 # Atlas IP whitelist
 echo ""
-echo "[5/8] MongoDB Atlas IP Whitelist"
+echo "[5/9] MongoDB Atlas IP Whitelist"
 echo "  Add these IPs to Atlas Network Access (or 0.0.0.0/0 for demo):"
 echo "    - $KAFKA_PUBLIC_IP/32"
 echo "    - $GENERATOR_IP/32"
@@ -143,11 +151,11 @@ read -r
 
 # Upload and start MLflow model
 echo ""
-echo "[6/8] Setting up MLflow model..."
-scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -r \
+echo "[6/9] Setting up MLflow model..."
+scp $SSH_OPTS -r \
   "$PROJECT_ROOT/ml-model/"* ubuntu@${MLFLOW_IP}:/opt/mlflow/app/
 
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${MLFLOW_IP} << 'REMOTEOF'
+ssh $SSH_OPTS ubuntu@${MLFLOW_IP} << 'REMOTEOF'
   cd /opt/mlflow
   source venv/bin/activate
   source .env
@@ -161,37 +169,157 @@ ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${MLFLOW_IP} << 'REMOT
   echo "MLflow model serving started"
 REMOTEOF
 
-# Upload and start Flink job
+# Upload and set up Flink with helper scripts
 echo ""
-echo "[7/8] Setting up Flink processor..."
-scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -r \
+echo "[7/9] Setting up Apache Flink (PyFlink 1.18) processor..."
+scp $SSH_OPTS -r \
   "$PROJECT_ROOT/flink-processor/"* ubuntu@${FLINK_IP}:/tmp/flink-job/
 
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${FLINK_IP} << REMOTEOF
+ssh $SSH_OPTS ubuntu@${FLINK_IP} << 'REMOTEOF'
+  # Copy job files
+  sudo mkdir -p /opt/flink-job
+  sudo cp /tmp/flink-job/* /opt/flink-job/
+  sudo chown -R ubuntu:ubuntu /opt/flink-job
+
+  # Install requirements
   source /opt/flink-env/bin/activate
-  cp /tmp/flink-job/* /opt/flink-job/
   cd /opt/flink-job
   pip install -r requirements.txt -q 2>/dev/null
-  export \$(cat /opt/flink-job-config.env | xargs)
-  nohup python -u flink_job.py > /var/log/flink-job.log 2>&1 &
-  echo "Flink job started"
+
+  # Create restart.sh — kills Flink hard, cleans PIDs, starts cluster, submits job
+  cat > /opt/flink-job/restart.sh << 'SCRIPT'
+#!/bin/bash
+# Hard-kill Flink and restart fresh (required between runs — stale state after cancel)
+set -e
+echo "Killing Flink processes..."
+pkill -9 -f "org.apache.flink" || true
+pkill -9 -f "flink_job.py" || true
+sleep 2
+
+# Clean PID files
+rm -f /opt/flink/log/*.pid 2>/dev/null || true
+
+echo "Starting Flink cluster..."
+/opt/flink/bin/start-cluster.sh
+sleep 5
+
+echo "Submitting PyFlink job..."
+cd /opt/flink-job
+source /opt/flink-env/bin/activate
+export $(cat /opt/flink-job-config.env | xargs)
+/opt/flink/bin/flink run -py flink_job.py \
+  -pyexec /opt/flink-env/bin/python3 \
+  >> /var/log/flink-job.log 2>&1 &
+sleep 5
+
+RUNNING=$(/opt/flink/bin/flink list -r 2>/dev/null | grep -c "RUNNING" || echo "0")
+echo "Flink job status: $RUNNING running"
+SCRIPT
+
+  # Create stop.sh — kills Flink hard, cleans PIDs
+  cat > /opt/flink-job/stop.sh << 'SCRIPT'
+#!/bin/bash
+# Hard-kill Flink (do not use 'flink cancel' — leaves stale state)
+echo "Killing Flink processes..."
+pkill -9 -f "org.apache.flink" || true
+pkill -9 -f "flink_job.py" || true
+rm -f /opt/flink/log/*.pid 2>/dev/null || true
+echo "Flink stopped"
+SCRIPT
+
+  # Create start.sh — just submits the job (assumes cluster is running)
+  cat > /opt/flink-job/start.sh << 'SCRIPT'
+#!/bin/bash
+# Submit the PyFlink job (cluster must already be running)
+set -e
+cd /opt/flink-job
+source /opt/flink-env/bin/activate
+export $(cat /opt/flink-job-config.env | xargs)
+/opt/flink/bin/flink run -py flink_job.py \
+  -pyexec /opt/flink-env/bin/python3 \
+  >> /var/log/flink-job.log 2>&1 &
+sleep 5
+RUNNING=$(/opt/flink/bin/flink list -r 2>/dev/null | grep -c "RUNNING" || echo "0")
+echo "Flink job status: $RUNNING running"
+SCRIPT
+
+  chmod +x /opt/flink-job/restart.sh /opt/flink-job/stop.sh /opt/flink-job/start.sh
+
+  # Start the first job
+  /opt/flink-job/restart.sh
+  echo "Flink processor setup complete"
 REMOTEOF
 
-# Upload and start generator
+# Upload and set up Generator with helper script
 echo ""
-echo "[8/8] Starting data generator..."
-scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -r \
+echo "[8/9] Setting up data generator (~1k events/sec)..."
+scp $SSH_OPTS -r \
   "$PROJECT_ROOT/data-generator/"* ubuntu@${GENERATOR_IP}:/tmp/generator/
 
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no ubuntu@${GENERATOR_IP} << REMOTEOF
+ssh $SSH_OPTS ubuntu@${GENERATOR_IP} << 'REMOTEOF'
+  # Copy files
+  sudo mkdir -p /opt/telco-generator
+  sudo cp -r /tmp/generator/* /opt/telco-generator/
+  sudo chown -R ubuntu:ubuntu /opt/telco-generator
   cd /opt/telco-generator
   source venv/bin/activate
-  cp -r /tmp/generator/* .
   pip install -r requirements.txt -q 2>/dev/null
-  source env.sh
-  export KAFKA_BROKER KAFKA_TOPIC
-  nohup python -u generator.py > /var/log/generator.log 2>&1 &
-  echo "Generator started"
+
+  # Create start.sh — kills old generator, starts new one (properly daemonized)
+  cat > /opt/telco-generator/start.sh << 'SCRIPT'
+#!/bin/bash
+# Kill existing generator and start fresh
+pkill -f generator.py || true
+sleep 2
+cd /opt/telco-generator
+source venv/bin/activate
+source env.sh
+export KAFKA_BROKER KAFKA_TOPIC
+nohup python -u generator.py >> /var/log/generator.log 2>&1 &
+sleep 3
+if pgrep -f generator.py > /dev/null; then
+  echo "Generator started (PID $(pgrep -f generator.py))"
+else
+  echo "ERROR: Generator failed to start"
+  exit 1
+fi
+SCRIPT
+
+  chmod +x /opt/telco-generator/start.sh
+
+  # Start the generator
+  /opt/telco-generator/start.sh
+  echo "Generator setup complete"
+REMOTEOF
+
+# Deploy the live dashboard to the MLflow instance
+echo ""
+echo "[9/9] Setting up live dashboard..."
+scp $SSH_OPTS -r \
+  "$PROJECT_ROOT/dashboard/"* ubuntu@${MLFLOW_IP}:/tmp/dashboard/
+
+# Copy SSH key for intra-VPC communication (dashboard SSHes to generator/flink)
+scp $SSH_OPTS "$SSH_KEY_PATH" ubuntu@${MLFLOW_IP}:/tmp/dashboard_key.pem
+
+ssh $SSH_OPTS ubuntu@${MLFLOW_IP} << REMOTEOF
+  sudo mkdir -p /opt/dashboard
+  sudo cp -r /tmp/dashboard/* /opt/dashboard/
+  sudo cp /tmp/dashboard_key.pem /opt/dashboard/bennyk_aws_key.pem
+  sudo chmod 400 /opt/dashboard/bennyk_aws_key.pem
+  sudo chown -R ubuntu:ubuntu /opt/dashboard
+
+  # Install dashboard dependencies
+  cd /opt/dashboard
+  /opt/mlflow/venv/bin/pip install flask "pymongo[srv]" dash plotly -q 2>/dev/null
+
+  # Start the dashboard
+  export \$(cat /opt/mlflow/.env | xargs)
+  export SSH_KEY=/opt/dashboard/bennyk_aws_key.pem
+  export GENERATOR_IP=${GENERATOR_PRIVATE_IP}
+  export FLINK_IP=${FLINK_PRIVATE_IP}
+  nohup /opt/mlflow/venv/bin/python /opt/dashboard/app.py >> /var/log/dashboard.log 2>&1 &
+  sleep 2
+  echo "Dashboard started on port 8050"
 REMOTEOF
 
 # Summary
@@ -201,17 +329,25 @@ echo "DEPLOYMENT COMPLETE"
 echo "============================================================"
 echo ""
 echo "Endpoints:"
+echo "  Dashboard:        http://${MLFLOW_IP}:8050 (Start/Stop Demo buttons)"
+echo "  Flink Web UI:     http://${FLINK_IP}:8081"
 echo "  MLflow Tracking:  http://${MLFLOW_IP}:5002"
 echo "  MLflow Inference: http://${MLFLOW_IP}:5003/invocations"
 echo ""
-echo "Next step - configure Atlas Trigger:"
+echo "Next step - configure Atlas Trigger (ap-southeast-2):"
 echo "  1. Atlas > App Services > Triggers"
 echo "  2. Collection: ods_demo_db.windowed_network_metrics (Insert)"
 echo "  3. Paste: atlas-trigger/trigger_function.js"
 echo "  4. Set MLFLOW_ENDPOINT value: http://${MLFLOW_IP}:5003/invocations"
 echo ""
-echo "Data will appear in MongoDB within 5 minutes:"
-echo "  db.windowed_network_metrics.countDocuments()"
-echo "  db.network_health_predictions.find().sort({timestamp:-1}).limit(5)"
+echo "Pipeline details:"
+echo "  - Generator: ~1k events/sec (1 thread, 100/batch, 0.1s sleep)"
+echo "  - Flink: 30-second emission per cell tower (sliding window)"
+echo "  - Cell degradation: 30% excellent, 12% degraded, 6% poor (rotates every 30s)"
 echo ""
-echo "To tear down: ./infrastructure/scripts/teardown.sh"
+echo "Data will appear on the dashboard within ~30 seconds."
+echo ""
+echo "To manage the demo, use the dashboard or:"
+echo "  Start: ./infrastructure/scripts/start_demo.sh"
+echo "  Stop:  ./infrastructure/scripts/stop_demo.sh"
+echo "  Tear down: ./infrastructure/scripts/teardown.sh"
