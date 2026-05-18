@@ -33,11 +33,8 @@ demo_state = {"status": "unknown", "message": ""}
 
 def run_ssh(host, command, timeout=60):
     """Run a command on a remote host via SSH."""
-    cmd = f'ssh {SSH_OPTS} ubuntu@{host} bash -s'
-    result = subprocess.run(
-        cmd, shell=True, capture_output=True, text=True,
-        input=command, timeout=timeout,
-    )
+    cmd = ["ssh"] + SSH_OPTS.split() + [f"ubuntu@{host}", "bash", "-c", command]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return result.returncode == 0, result.stdout + result.stderr
 
 
@@ -170,14 +167,7 @@ def start_demo():
 
             # Start generator
             if GENERATOR_IP:
-                ok, out = run_ssh(GENERATOR_IP, (
-                    "pkill -f generator.py 2>/dev/null; sleep 2; "
-                    "cd /opt/telco-generator && "
-                    "source venv/bin/activate && "
-                    "source /opt/telco-generator/env.sh && "
-                    "nohup python -u generator.py </dev/null >> /var/log/generator.log 2>&1 & "
-                    "sleep 2; ps aux | grep -q '[g]enerator.py'"
-                ))
+                ok, out = run_ssh(GENERATOR_IP, "/opt/telco-generator/start.sh")
 
             demo_state["status"] = "running"
             demo_state["message"] = "Pipeline running — data will appear in ~30 seconds"
