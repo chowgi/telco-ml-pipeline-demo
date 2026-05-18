@@ -31,10 +31,10 @@ db = client[MONGODB_DB]
 demo_state = {"status": "unknown", "message": ""}
 
 
-def run_ssh(host, command):
+def run_ssh(host, command, timeout=60):
     """Run a command on a remote host via SSH."""
     cmd = f"ssh {SSH_OPTS} ubuntu@{host} '{command}'"
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
     return result.returncode == 0, result.stdout + result.stderr
 
 
@@ -146,33 +146,18 @@ def start_demo():
             # Clear MongoDB collections
             db.network_health_predictions.delete_many({})
             db.windowed_network_metrics.delete_many({})
-            demo_state["message"] = "Starting Flink stream processor..."
-
-            # Start Flink job
-            if FLINK_IP:
-                # Cancel any existing jobs
-                run_ssh(FLINK_IP, (
-                    "/opt/flink/bin/flink list -r 2>/dev/null | grep -oP '[0-9a-f]{32}' | "
-                    "while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done"
-                ))
-                # Restart cluster cleanly
-                run_ssh(FLINK_IP, (
-                    "/opt/flink/bin/stop-cluster.sh 2>/dev/null; "
-                    "sleep 2; "
-                    "/opt/flink/bin/start-cluster.sh 2>/dev/null"
-                ))
-                # Wait for cluster to be ready, then submit
-                time.sleep(5)
-                ok, out = run_ssh(FLINK_IP, (
-                    "source /opt/flink-env/bin/activate && "
-                    "export $(cat /opt/flink-job-config.env | xargs) && "
-                    "/opt/flink/bin/flink run -py /opt/flink-job/flink_job.py "
-                    "-pyexec /opt/flink-env/bin/python3 -d 2>&1 | grep -v WARNING"
-                ))
-                if not ok:
-                    demo_state["message"] = f"Flink start issue: {out[:200]}"
-
             demo_state["message"] = "Starting data generator..."
+
+            # Ensure Flink job is running (submit only if no job active)
+            if FLINK_IP:
+                ok, out = run_ssh(FLINK_IP, "/opt/flink/bin/flink list -r 2>/dev/null")
+                if ok and "RUNNING" not in out:
+                    run_ssh(FLINK_IP, (
+                        "source /opt/flink-env/bin/activate && "
+                        "export $(cat /opt/flink-job-config.env | xargs) && "
+                        "/opt/flink/bin/flink run -py /opt/flink-job/flink_job.py "
+                        "-pyexec /opt/flink-env/bin/python3 -d 2>&1 | grep -v WARNING"
+                    ))
 
             # Start generator
             if GENERATOR_IP:
@@ -181,7 +166,7 @@ def start_demo():
                     "cd /opt/telco-generator && "
                     "source venv/bin/activate && "
                     "source /opt/telco-generator/env.sh && "
-                    "nohup python -u generator.py >> /var/log/generator.log 2>&1 &"
+                    "nohup python -u generator.py >> /var/log/generator.log 2>&1 & disown && sleep 1"
                 ))
 
             demo_state["status"] = "running"
@@ -205,13 +190,8 @@ def stop_demo():
             if GENERATOR_IP:
                 run_ssh(GENERATOR_IP, "pkill -f generator.py 2>/dev/null")
 
-            if FLINK_IP:
-                run_ssh(FLINK_IP, (
-                    "/opt/flink/bin/flink list -r 2>/dev/null | grep -oP '[0-9a-f]{32}' | "
-                    "while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done"
-                ))
-
-            # Clear data so dashboard shows clean state
+            # Wait for Flink to flush remaining data, then clear
+            time.sleep(5)
             db.network_health_predictions.delete_many({})
             db.windowed_network_metrics.delete_many({})
 
