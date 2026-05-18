@@ -19,7 +19,7 @@ FLINK_IP=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region 
 ssh $SSH_OPTS ubuntu@$GENERATOR_IP "pkill -f generator.py || true" 2>/dev/null
 echo "  Generator stopped"
 
-ssh $SSH_OPTS ubuntu@$FLINK_IP "pkill -f flink_job.py || true" 2>/dev/null
-echo "  Processor stopped"
+ssh $SSH_OPTS ubuntu@$FLINK_IP '/opt/flink/bin/flink list -r 2>/dev/null | grep -oP "[0-9a-f]{32}" | while read JOB_ID; do /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null; done' 2>/dev/null
+echo "  Flink job(s) cancelled"
 
-echo "Done. Infrastructure remains running."
+echo "Done. Infrastructure remains running (Flink cluster still up at :8081)."

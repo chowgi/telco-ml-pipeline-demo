@@ -64,17 +64,35 @@ client.close()
 echo ""
 
 # Stop existing processes and restart
-echo "[4/5] Starting stream processor..."
+echo "[4/5] Starting Flink stream processor..."
 cat > /tmp/_start_processor.sh << 'PROCSCRIPT'
 #!/bin/bash
-pkill -f flink_job.py || true
+# Cancel any existing Flink jobs
+/opt/flink/bin/flink list -r 2>/dev/null | grep -oP '[0-9a-f]{32}' | while read JOB_ID; do
+  /opt/flink/bin/flink cancel $JOB_ID 2>/dev/null || true
+done
 sleep 2
+
+# Ensure Flink cluster is running
+/opt/flink/bin/start-cluster.sh 2>/dev/null || true
+sleep 3
+
+# Submit PyFlink job
 cd /opt/flink-job
 source /opt/flink-env/bin/activate
 export $(cat /opt/flink-job-config.env | xargs)
-nohup python -u flink_job.py >> /var/log/flink-job.log 2>&1 &
-sleep 2
-pgrep -f flink_job.py > /dev/null && echo "  Processor started (PID $(pgrep -f flink_job.py))" || echo "  ERROR: Processor failed to start"
+/opt/flink/bin/flink run -py flink_job.py \
+  -pyexec /opt/flink-env/bin/python3 \
+  >> /var/log/flink-job.log 2>&1 &
+sleep 5
+
+# Verify job is running
+RUNNING=$(/opt/flink/bin/flink list -r 2>/dev/null | grep -c "RUNNING" || echo "0")
+if [ "$RUNNING" -gt "0" ]; then
+  echo "  Flink job running ($RUNNING job(s) active)"
+else
+  echo "  WARNING: Flink job may still be starting — check Web UI at :8081"
+fi
 PROCSCRIPT
 scp $SSH_OPTS /tmp/_start_processor.sh ubuntu@$FLINK_IP:/tmp/_start_processor.sh > /dev/null
 ssh $SSH_OPTS ubuntu@$FLINK_IP "bash /tmp/_start_processor.sh"
@@ -111,9 +129,10 @@ echo "============================================================"
 echo "  DEMO READY"
 echo "============================================================"
 echo ""
-echo "  Dashboard:  http://$MLFLOW_IP:8050"
-echo "  MLflow UI:  http://$MLFLOW_IP:5002"
-echo "  MLflow API: http://$MLFLOW_IP:5003/invocations"
+echo "  Dashboard:   http://$MLFLOW_IP:8050"
+echo "  Flink UI:    http://$FLINK_IP:8081"
+echo "  MLflow UI:   http://$MLFLOW_IP:5002"
+echo "  MLflow API:  http://$MLFLOW_IP:5003/invocations"
 echo ""
 echo "  Data will appear on the dashboard within ~30 seconds."
 echo "  Predictions will start flowing once the first cell"

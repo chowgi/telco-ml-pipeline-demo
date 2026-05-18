@@ -309,13 +309,13 @@
         <!-- Architecture -->
         <div class="architecture">
             <h3>Pipeline Architecture</h3>
-            <div class="arch-diagram"><span class="highlight">Data Generator</span> (EC2, 17k eps)
+            <div class="arch-diagram"><span class="highlight">Data Generator</span> (EC2, 17k+ eps)
         |
         | Confluent Kafka (single broker, 12 partitions)
         v
-<span class="highlight">Stream Processor</span> (rolling 5-min stats, 30s emission per cell)
+<span class="highlight">Apache Flink</span> (PyFlink — 5-min sliding window, 30s slide, per cell)
         |
-        | pymongo insert_one (per cell, every 30s)
+        | pymongo insert (per cell, every 30s)
         v
 <span class="green">MongoDB Atlas</span> — <span class="green">windowed_network_metrics</span> (ODS)
         |
@@ -334,10 +334,10 @@
                 <span class="pill atlas">Atlas Triggers</span>
                 <span class="pill atlas">Change Streams</span>
                 <span class="pill kafka">Apache Kafka</span>
-                <span class="pill kafka">Confluent Python</span>
+                <span class="pill kafka">PyFlink 1.18</span>
                 <span class="pill ml">MLflow</span>
                 <span class="pill ml">scikit-learn</span>
-                <span class="pill">Python Streaming</span>
+                <span class="pill">Sliding Windows</span>
                 <span class="pill">AWS EC2</span>
             </div>
         </div>
@@ -348,7 +348,7 @@
             <p style="font-size: 13px; line-height: 1.7; color: #8b949e; margin-top: 8px;">
                 This dashboard shows a live end-to-end ML pipeline built on <strong style="color:#3fb950;">MongoDB Atlas as the Operational Data Store</strong>.
                 50 simulated cell towers generate network telemetry at 17,000+ events/second into Kafka.
-                A stream processor computes rolling statistics (avg, min, max, p95) for each tower and writes snapshots to Atlas every 30 seconds.
+                Apache Flink (PyFlink) applies a 5-minute sliding window with 30-second slides per cell tower, computing rolling statistics (avg, min, max, p95) and writing to Atlas every 30 seconds.
                 An <strong style="color:#d29922;">Atlas Database Trigger</strong> fires on every insert, calls an MLflow model to classify network health
                 (excellent / good / poor), and writes the prediction back to Atlas — all within milliseconds, zero external orchestration.
             </p>

@@ -364,13 +364,41 @@ Resources:
           exec > /var/log/flink-setup.log 2>&1
 
           apt-get update
-          apt-get install -y python3-pip python3-venv
+          apt-get install -y default-jdk python3-pip python3-venv wget
 
+          # Install Apache Flink 1.18.1
+          FLINK_VERSION=1.18.1
+          wget -q https://archive.apache.org/dist/flink/flink-${!FLINK_VERSION}/flink-${!FLINK_VERSION}-bin-scala_2.12.tgz -O /tmp/flink.tgz
+          tar -xzf /tmp/flink.tgz -C /opt/
+          mv /opt/flink-${!FLINK_VERSION} /opt/flink
+          chown -R ubuntu:ubuntu /opt/flink
+          rm /tmp/flink.tgz
+
+          # Download Kafka connector JAR for Flink
+          wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.1.0-1.18/flink-sql-connector-kafka-3.1.0-1.18.jar -O /opt/flink/lib/flink-sql-connector-kafka-3.1.0-1.18.jar
+
+          # Configure Flink for standalone mode
+          cat > /opt/flink/conf/flink-conf.yaml << FLINKEOF
+          jobmanager.rpc.address: localhost
+          jobmanager.rpc.port: 6123
+          jobmanager.memory.process.size: 2048m
+          taskmanager.memory.process.size: 8192m
+          taskmanager.numberOfTaskSlots: 8
+          parallelism.default: 4
+          rest.port: 8081
+          rest.address: 0.0.0.0
+          rest.bind-address: 0.0.0.0
+          python.client.executable: /opt/flink-env/bin/python3
+          python.executable: /opt/flink-env/bin/python3
+          FLINKEOF
+
+          # Python environment for PyFlink
           python3 -m venv /opt/flink-env
           chown -R ubuntu:ubuntu /opt/flink-env
           source /opt/flink-env/bin/activate
-          pip install confluent-kafka pymongo[srv] numpy
+          pip install apache-flink==1.18.1 pymongo[srv]
 
+          # Job config
           mkdir -p /opt/flink-job
           chown -R ubuntu:ubuntu /opt/flink-job
 
@@ -380,8 +408,27 @@ Resources:
           MONGODB_URI=${MongoDBUri}
           MONGODB_DB=ods_demo_db
           MONGODB_COLLECTION=windowed_network_metrics
-          WINDOW_SIZE_MINUTES=5
           CFGEOF
+
+          # Start Flink cluster
+          cat > /etc/systemd/system/flink.service << SVCEOF
+          [Unit]
+          Description=Apache Flink Cluster
+          After=network.target
+          [Service]
+          Type=forking
+          User=ubuntu
+          Environment=JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+          ExecStart=/opt/flink/bin/start-cluster.sh
+          ExecStop=/opt/flink/bin/stop-cluster.sh
+          RemainAfterExit=yes
+          [Install]
+          WantedBy=multi-user.target
+          SVCEOF
+
+          systemctl daemon-reload
+          systemctl enable flink
+          systemctl start flink
 
           touch /var/log/flink-job.log
           chown ubuntu:ubuntu /var/log/flink-job.log
@@ -452,6 +499,10 @@ Outputs:
   FlinkPublicIP:
     Value: !GetAtt FlinkInstance.PublicIp
     Description: Flink public IP
+
+  FlinkWebUI:
+    Value: !Sub http://${FlinkInstance.PublicIp}:8081
+    Description: Flink Web UI
 
   MLflowPublicIP:
     Value: !GetAtt MLflowInstance.PublicIp
