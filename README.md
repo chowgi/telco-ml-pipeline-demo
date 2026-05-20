@@ -1,6 +1,6 @@
 # Telco ODS - Autonomous Networks ML Pipeline
 
-End-to-end streaming ML pipeline demonstrating MongoDB Atlas as an Operational Data Store for network health anomaly detection. Built for the Telstra ODS evaluation.
+End-to-end streaming ML pipeline demonstrating MongoDB Atlas as an Operational Data Store for real-time network health anomaly detection in telco autonomous networks.
 
 ## Architecture
 
@@ -173,15 +173,6 @@ Flink must be **hard-killed and restarted** between demo runs. PyFlink/Beam work
 - `/opt/flink-job/restart.sh` -- kills Flink, cleans PIDs, starts cluster, submits job
 - `/opt/flink-job/stop.sh` -- kills Flink, cleans PIDs
 - `/opt/flink-job/start.sh` -- just submits the job (assumes cluster is running)
-
-## ODS Functional Requirements Demonstrated
-
-- **FR-3**: Real-time and near-real-time data ingestion (Kafka + Flink streaming)
-- **FR-5**: Schema-flexible data storage (MongoDB document model)
-- **FR-9**: API-based data access (MLflow REST, Atlas Data API)
-- **FR-11**: Operational feature enablement (Feast + windowed aggregates)
-- **FR-12**: Integration with operational workflows (anomaly detection pipeline)
-- **FR-14**: Separation of operational and historical scope (windowed ODS vs raw archive)
 
 ## Troubleshooting
 

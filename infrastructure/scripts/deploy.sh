@@ -220,22 +220,56 @@ python train_model.py
 " 2>/dev/null
 echo "  Model trained and registered"
 
-# Start model serving
-ssh $SSH_OPTS ubuntu@$MLFLOW_IP "
-source /opt/mlflow/venv/bin/activate
-export MLFLOW_TRACKING_URI=http://localhost:5002
-nohup mlflow models serve -m 'models:/telco_ods_network_health_classifier/1' --host 0.0.0.0 --port 5003 --no-conda >> /var/log/mlflow-serve.log 2>&1 < /dev/null &
-" 2>/dev/null
-echo "  Model serving started"
+# Create systemd services for MLflow serving and dashboard (auto-restart on crash)
+ssh $SSH_OPTS ubuntu@$MLFLOW_IP 'sudo bash -c "cat > /etc/systemd/system/mlflow-serving.service << SVCEOF
+[Unit]
+Description=MLflow Model Serving
+After=network.target mlflow-tracking.service
+Requires=mlflow-tracking.service
 
-# Start dashboard
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/mlflow
+Environment=MLFLOW_TRACKING_URI=http://localhost:5002
+Environment=PATH=/opt/mlflow/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/mlflow/venv/bin/mlflow models serve -m models:/telco_ods_network_health_classifier/latest -p 5003 --host 0.0.0.0 --no-conda --workers 2
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF"' 2>/dev/null
+
+# Fix tracking service to use Restart=always (it exits with code 0 on huey/sqlite crashes)
+ssh $SSH_OPTS ubuntu@$MLFLOW_IP "sudo sed -i 's/Restart=on-failure/Restart=always\nRestartSec=5/' /etc/systemd/system/mlflow-tracking.service" 2>/dev/null
+
+ssh $SSH_OPTS ubuntu@$MLFLOW_IP 'sudo bash -c "cat > /etc/systemd/system/dashboard.service << SVCEOF
+[Unit]
+Description=Telco ODS Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/dashboard
+ExecStart=/bin/bash -c \"source /opt/dashboard/env.sh && exec /opt/mlflow/venv/bin/python /opt/dashboard/app.py\"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF"' 2>/dev/null
+
 ssh $SSH_OPTS ubuntu@$MLFLOW_IP "
-source /opt/dashboard/env.sh
-cd /opt/dashboard
-source /opt/mlflow/venv/bin/activate
-nohup python app.py >> /var/log/dashboard.log 2>&1 < /dev/null &
+sudo systemctl daemon-reload
+sudo systemctl enable mlflow-serving dashboard
+sudo systemctl restart mlflow-tracking
+sleep 5
+sudo systemctl start mlflow-serving dashboard
 " 2>/dev/null
-echo "  Dashboard started"
+echo "  MLflow serving started (systemd, auto-restart)"
+echo "  Dashboard started (systemd, auto-restart)"
 
 # Upload and configure Feast
 echo ""

@@ -80,3 +80,6 @@ feast-feature-store/data/
 
 # Parquet files
 *.parquet
+
+# PDFs (confidential documents)
+*.pdf
