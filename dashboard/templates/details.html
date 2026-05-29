@@ -203,18 +203,7 @@
             </div>
         </div>
 
-        <!-- Slide 2: The Problem -->
-        <div class="slide">
-            <h2>The Problem</h2>
-            <ul>
-                <li><strong>Telco networks generate millions of telemetry events per second</strong> — signal strength, throughput, latency, jitter, packet loss across thousands of cell towers</li>
-                <li><strong>Current approach:</strong> batch analytics with 30-60 min delay. By the time you detect a degraded tower, customers have already dropped calls</li>
-                <li><strong>What's needed:</strong> real-time anomaly detection that <em>reacts</em> to data as it arrives — not on a schedule, not after a batch job completes</li>
-                <li><strong>The ODS challenge:</strong> you need a single platform that can ingest at speed, trigger ML workflows, serve features, and answer operational queries — without stitching together 5 different systems</li>
-            </ul>
-        </div>
-
-        <!-- Slide 3: Architecture -->
+        <!-- Slide 2: Architecture -->
         <div class="slide">
             <h2>Pipeline Architecture</h2>
             <div class="arch-diagram"><span class="blue">Data Generator</span> (50 cells, ~17k events/sec)
@@ -235,48 +224,16 @@
 
         <!-- Slide 4: Why MongoDB? -->
         <div class="slide">
-            <h2>Why MongoDB — Not Something Else?</h2>
+            <h2>Why MongoDB</h2>
             <ul>
                 <li><strong class="green">Reactive, not passive</strong> — Atlas Triggers (Change Streams) fire ML inference the instant data lands. No Airflow, no Step Functions, no Lambda glue. Try that with Cassandra or TimescaleDB.</li>
                 <li><strong class="green">One cluster, three roles</strong> — ODS writes, feature store, and prediction store in one platform. Competitors need Cassandra + Redis + Postgres — three systems to operate.</li>
                 <li><strong class="green">Document model = zero migrations</strong> — nested per-metric stats (avg, min, max, p95) in one document. New KPI? Add a field. No ALTER TABLE, no downtime.</li>
                 <li><strong class="green">Operational + ML on the same data</strong> — Feast online store backed by Atlas. No separate caching tier for ML features. Sub-15ms retrieval from the same cluster.</li>
+                <li><strong class="green">Scale and resilience built in</strong> — horizontal sharding, automatic failover, and multi-region replication. Scale from prototype to millions of events/sec without re-architecting the pipeline.</li>
             </ul>
         </div>
 
-        <!-- Slide 5: Data Flow -->
-        <div class="slide">
-            <h2>Data Flow</h2>
-            <ul>
-                <li><strong>Generate:</strong> 50 cell towers emit signal strength, throughput, latency, packet loss, jitter, call drops</li>
-                <li><strong>Stream:</strong> Kafka decouples ingestion from processing — raw events never touch Atlas</li>
-                <li><strong>Aggregate:</strong> Flink computes rolling stats (avg, min, max, p95) per cell per 30s slide</li>
-                <li><strong>Store:</strong> One document per cell per window written to Atlas as the ODS</li>
-                <li><strong>React:</strong> Atlas Trigger fires, calls ML model, writes prediction — zero orchestration code</li>
-            </ul>
-        </div>
-
-        <!-- Slide 6: The Alternative (Without MongoDB) -->
-        <div class="slide">
-            <h2>Without MongoDB — What This Looks Like</h2>
-            <ul>
-                <li><strong class="orange">TimescaleDB / InfluxDB</strong> — ingest works, but no native triggers. You need Lambda + EventBridge + custom glue to fire ML inference</li>
-                <li><strong class="orange">Cassandra</strong> — fast writes, but no aggregation, no change streams, no event-driven compute. You bolt on Spark + Airflow</li>
-                <li><strong class="orange">Feature store</strong> — Redis or DynamoDB as a separate system for ML serving. More infra, more latency, more ops</li>
-                <li><strong class="green">MongoDB Atlas</strong> — ingest, react, serve, query. One platform. The ODS <em>does</em> things, it doesn't just store things</li>
-            </ul>
-        </div>
-
-        <!-- Slide 7: Key Design Decisions -->
-        <div class="slide">
-            <h2>Key Design Decisions</h2>
-            <ul>
-                <li><strong>Atlas as single backend</strong> — ODS, feature store, predictions in one cluster</li>
-                <li><strong>Triggers, not polling</strong> — ML inference is purely event-driven, sub-second response</li>
-                <li><strong>Sliding windows</strong> — 5-min context, 30s updates. Smooth signal, not bursty snapshots</li>
-                <li><strong>Operational scope</strong> — raw data stays in Kafka, only aggregates in Atlas. Right data, right layer</li>
-            </ul>
-        </div>
     </div>
 
     <div class="nav-bar">

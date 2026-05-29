@@ -97,14 +97,25 @@ The deploy script will:
 6. **MLflow** returns prediction (excellent/good/poor), trigger writes to `network_health_predictions`
 7. **Live Dashboard** (port 8050) displays real-time results with Start/Stop controls
 
+## Demo Flow
+
+1. Deploy: `./infrastructure/scripts/deploy.sh` (~5 min)
+2. Open the dashboard: `http://<mlflow-ip>:8050`
+3. Click **Start Demo** — generator, Flink, and inference all begin
+4. Data appears within ~10 seconds (50 cells, predictions flowing in real-time)
+5. Show the Atlas Trigger in action: Atlas UI > App Services > Logs
+6. Show Flink windowing: Flink UI at `http://<flink-ip>:8081`
+7. Show Feast feature store panel on the dashboard (MongoDB online store)
+8. Click **Stop Demo** when finished
+9. Tear down: `./infrastructure/scripts/teardown.sh`
+
 ## Live Dashboard
 
 The dashboard runs on the MLflow instance at port 8050 and provides:
 - Start/Stop Demo buttons for one-click pipeline management
 - Real-time visualization of predictions and network health
+- Architecture & Details slides (linked from service bar)
 - Connection to Flink and Generator instances via private IPs (intra-VPC SSH)
-
-The dashboard's `run_ssh` passes commands as `["ssh", ..., "bash", "-c", command]`.
 
 ## Model Details
 
@@ -145,15 +156,9 @@ python materialize.py  # Push features + demo retrieval
 
 Features are materialized from `windowed_network_metrics` into the Feast online store (backed by MongoDB), enabling low-latency feature retrieval at inference time.
 
-## Atlas Trigger Setup (Manual)
+## Atlas Trigger
 
-1. Go to Atlas > App Services > Create Application (region: ap-southeast-2)
-2. Create a Database Trigger:
-   - Collection: `ods_demo_db.windowed_network_metrics`
-   - Operation: Insert
-   - Full Document: enabled
-3. Paste `atlas-trigger/trigger_function.js` as the function
-4. Create a Value named `MLFLOW_ENDPOINT` with `http://<mlflow-ip>:5003/invocations`
+The deploy script automatically creates and configures the Atlas Trigger via the App Services Admin API. No manual setup needed. The trigger watches `ods_demo_db.windowed_network_metrics` for inserts, calls MLflow, and writes predictions back to Atlas.
 
 ## MongoDB Collections
 
