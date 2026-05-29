@@ -28,13 +28,32 @@ aws cloudformation wait stack-delete-complete \
   --region "$REGION"
 
 echo ""
-echo "[2/2] Done."
+echo "[2/3] Clearing MongoDB Atlas collections..."
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [ -f "$PROJECT_ROOT/.env" ]; then
+  MONGODB_URI=$(grep '^MONGODB_URI=' "$PROJECT_ROOT/.env" | cut -d'=' -f2-)
+fi
+
+if [ -n "$MONGODB_URI" ]; then
+  python3 -c "
+from pymongo import MongoClient
+client = MongoClient('${MONGODB_URI}')
+db = client['ods_demo_db']
+for coll in ['windowed_network_metrics', 'network_health_predictions', 'telco_ods_online']:
+    result = db[coll].delete_many({})
+    print(f'  Cleared {coll}: {result.deleted_count} docs')
+client.close()
+"
+  echo "  Collections cleared (not dropped — trigger resume token preserved)"
+else
+  echo "  Warning: No MONGODB_URI found. Skipping Atlas cleanup."
+fi
+
 echo ""
-echo "All AWS resources destroyed."
+echo "[3/3] Done."
 echo ""
-echo "NOTE: MongoDB Atlas data is NOT deleted. To clean up:"
-echo "  - Drop ods_demo_db.windowed_network_metrics"
-echo "  - Drop ods_demo_db.network_health_predictions"
-echo "  - Drop ods_demo_db.telco_ods_online"
-echo "  - Remove Atlas trigger via App Services UI"
-echo "  - Remove IP whitelist entries"
+echo "All AWS resources destroyed. Atlas collections cleared."
+echo ""
+echo "NOTE: The following are NOT removed automatically:"
+echo "  - Atlas trigger (preserved for next deploy)"
+echo "  - IP whitelist entries (stale but harmless)"
