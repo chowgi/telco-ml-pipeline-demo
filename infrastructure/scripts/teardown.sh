@@ -35,7 +35,8 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
 fi
 
 if [ -n "$MONGODB_URI" ]; then
-  python3 -c "
+  if python3 -c "import pymongo" 2>/dev/null; then
+    python3 -c "
 from pymongo import MongoClient
 client = MongoClient('${MONGODB_URI}')
 db = client['ods_demo_db']
@@ -44,7 +45,11 @@ for coll in ['windowed_network_metrics', 'network_health_predictions', 'telco_od
     print(f'  Cleared {coll}: {result.deleted_count} docs')
 client.close()
 "
-  echo "  Collections cleared (not dropped — trigger resume token preserved)"
+    echo "  Collections cleared (not dropped — trigger resume token preserved)"
+  else
+    echo "  Warning: pymongo not installed. Install with: pip3 install pymongo"
+    echo "  Skipping Atlas cleanup — clear collections manually via Atlas UI."
+  fi
 else
   echo "  Warning: No MONGODB_URI found. Skipping Atlas cleanup."
 fi
