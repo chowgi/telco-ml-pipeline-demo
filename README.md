@@ -2,25 +2,40 @@
 
 End-to-end streaming ML pipeline demonstrating MongoDB Atlas as an Operational Data Store for real-time network health anomaly detection in telco autonomous networks.
 
+This demo showcases MongoDB's open-source integration capabilities — Apache Kafka, Apache Flink, MLflow, and Feast all connect natively to MongoDB Atlas, forming a production-grade ML pipeline without proprietary glue.
+
 ## Architecture
 
 ```
-EC2 Generator ──> Kafka (EC2) ──> Apache Flink (PyFlink 1.18, 30s sliding window) ──> MongoDB Atlas (ODS)
+EC2 Generator ──> Kafka (EC2) ──> Apache Flink (PyFlink 1.18, 10s windows) ──> MongoDB Atlas (ODS)
   (~1k eps)      single broker     aggregates metrics per cell tower            |
                                                                                 |
-                  Live Dashboard <── predictions <── Atlas Trigger (ap-southeast-2) ──> MLflow EC2
-                  (port 8050)       collection      (on insert)                         (/invocations)
+                  Live Dashboard <── predictions <── Atlas Trigger ──> MLflow EC2
+                  (port 8050)       collection      (on insert)       (/invocations)
                                                          |
                                                Feast Feature Store
                                                (MongoDB online store)
 ```
+
+## Open-Source Integrations
+
+This demo highlights MongoDB's native integration with the open-source ML/data ecosystem:
+
+| Integration | How It Connects |
+|-------------|-----------------|
+| **Apache Kafka** | Flink consumes from Kafka, writes to MongoDB via PyMongo |
+| **Apache Flink** | PyFlink keyed process function with direct MongoDB sink |
+| **MLflow** | Model registry + serving; Atlas Trigger calls the REST API |
+| **Feast** | MongoDB as the online feature store (`MongoDBOnlineStore`) |
+
+No proprietary connectors or middleware — each tool connects to Atlas using its standard MongoDB driver or native integration.
 
 ## Components
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
 | Data Generator | `data-generator/` | Kafka producer simulating cell tower telemetry (~1k eps, configurable) |
-| Stream Processor | `flink-processor/` | Apache Flink (PyFlink 1.18) with 30s emission timers per cell tower |
+| Stream Processor | `flink-processor/` | Apache Flink (PyFlink 1.18) with 10s emission timers per cell tower |
 | ML Model | `ml-model/` | RandomForest network health classifier served via MLflow |
 | Live Dashboard | `dashboard/` | Web dashboard (port 8050) with Start/Stop Demo buttons |
 | Feast Feature Store | `feast-feature-store/` | MongoDB online store for feature serving |
@@ -29,23 +44,10 @@ EC2 Generator ──> Kafka (EC2) ──> Apache Flink (PyFlink 1.18, 30s slidin
 
 ## Prerequisites
 
-- AWS CLI configured with ap-southeast-2 access
-- An EC2 Key Pair in ap-southeast-2 (see below)
+- AWS CLI configured for ap-southeast-2
+- EC2 Key Pair in ap-southeast-2
 - SSH client
-
-### Create an EC2 Key Pair
-
-```bash
-aws ec2 create-key-pair \
-  --region ap-southeast-2 \
-  --key-name telco-demo \
-  --query 'KeyMaterial' \
-  --output text > telco-demo.pem
-
-chmod 400 telco-demo.pem
-```
-
-Or create one in the AWS Console: EC2 > Key Pairs > Create key pair.
+- `.env` file with `MONGODB_URI`, `ATLAS_PUBLIC_KEY`, `ATLAS_PRIVATE_KEY`, `ATLAS_PROJECT_ID`
 
 ## Quick Start
 
@@ -54,11 +56,11 @@ Or create one in the AWS Console: EC2 > Key Pairs > Create key pair.
 export KEY_PAIR_NAME=your-key-pair-name
 export SSH_KEY_PATH=./your-key.pem
 
-# 2. Deploy everything (CloudFormation + app setup)
+# 2. Deploy everything (CloudFormation + app setup, ~5 min)
 ./infrastructure/scripts/deploy.sh
 
-# 3. Validate pipeline is running
-./infrastructure/scripts/validate.sh
+# 3. Start the pipeline
+./infrastructure/scripts/start_demo.sh
 
 # 4. Open the dashboard
 open http://<mlflow-ip>:8050
@@ -68,13 +70,14 @@ open http://<mlflow-ip>:8050
 ```
 
 The deploy script will:
-1. Deploy a CloudFormation stack with 4 EC2 instances (Kafka, Generator, Flink, MLflow)
-2. Prompt you to whitelist IPs in MongoDB Atlas
+1. Deploy a CloudFormation stack with 5 EC2 instances (Kafka, Generator, Flink, MLflow, Feast)
+2. Whitelist EC2 IPs in MongoDB Atlas automatically
 3. Train and deploy the ML model
-4. Set up Flink with helper scripts (restart.sh, stop.sh, start.sh) and start the job
-5. Set up the generator with start.sh and begin producing events
-6. Deploy the live dashboard to the MLflow instance
-7. Print instructions for the Atlas trigger setup
+4. Configure Flink with helper scripts and the streaming job
+5. Configure the data generator
+6. Deploy the live dashboard
+7. Set up Feast feature store (apply + initial materialization)
+8. Create/update the Atlas Trigger via the App Services Admin API
 
 ## AWS Resources (ap-southeast-2)
 
@@ -82,18 +85,19 @@ The deploy script will:
 |----------|---------------|---------|-----------|
 | VPC | - | Networking | $0 |
 | EC2 Kafka | t3.xlarge | Single-broker Kafka | ~$1.50/day |
-| EC2 Generator | t3.small | ~1k events/sec producer (configurable) | ~$0.50/day |
+| EC2 Generator | t3.small | ~1k events/sec producer | ~$0.50/day |
 | EC2 Processor | c5.4xlarge | Apache Flink (PyFlink 1.18) streaming | ~$6/day |
 | EC2 MLflow | t3.large | Model tracking + serving + dashboard | ~$2/day |
-| **Total** | | | **~$10/day** |
+| EC2 Feast | t3.small | Feast feature server + materialization | ~$0.50/day |
+| **Total** | | | **~$10.50/day** |
 
 ## Data Flow
 
 1. **Generator** produces ~1k events/sec of simulated cell tower telemetry (50 towers across Sydney, Melbourne, Brisbane, Perth, Adelaide) with rotating cell-level degradation (30% excellent, 12% degraded, 6% poor; cells rotate every 30s)
 2. **Kafka** buffers events on topic `telco-raw-telemetry` (12 partitions)
-3. **Apache Flink** consumes from Kafka, applies 30-second emission timers per cell tower, computes avg/min/max/p95 for all metrics
-4. **MongoDB Atlas** receives windowed aggregates into `windowed_network_metrics` time series collection
-5. **Atlas Trigger** (ap-southeast-2) fires on insert, extracts avg features, calls MLflow `/invocations`
+3. **Apache Flink** consumes from Kafka, applies 10-second emission timers per cell tower, computes avg/min/max/p95 for all metrics
+4. **MongoDB Atlas** receives windowed aggregates into `windowed_network_metrics`
+5. **Atlas Trigger** fires on insert, extracts avg features, calls MLflow `/invocations`
 6. **MLflow** returns prediction (excellent/good/poor), trigger writes to `network_health_predictions`
 7. **Live Dashboard** (port 8050) displays real-time results with Start/Stop controls
 
@@ -164,20 +168,17 @@ The deploy script automatically creates and configures the Atlas Trigger via the
 
 | Collection | Type | Purpose |
 |------------|------|---------|
-| `windowed_network_metrics` | Time series | Flink-produced 30s window aggregates per cell |
+| `windowed_network_metrics` | Standard | Flink-produced 10s window aggregates per cell |
 | `network_health_predictions` | Standard | ML predictions from Atlas Trigger |
-| `feast_online_features` | Standard | Feast online store |
-| `training_windowed_metrics` | Standard | Synthetic training data |
-| `customers` | Standard | Reference data (optional) |
-| `cells` | Standard | Cell tower reference data (optional) |
+| `telco_ods_online` | Standard | Feast online store (materialized features) |
+| `training_windowed_metrics` | Standard | Synthetic training data for model |
 
 ## Flink Lifecycle Notes
 
-Flink must be **hard-killed and restarted** between demo runs. PyFlink/Beam workers leave stale state after a `flink cancel`, so the pre-deployed helper scripts handle this:
+Flink must be **restarted** between demo runs — PyFlink/Beam workers leak direct buffers after a `flink cancel`. The Start/Stop Demo buttons and scripts handle this automatically:
 
-- `/opt/flink-job/restart.sh` -- kills Flink, cleans PIDs, starts cluster, submits job
-- `/opt/flink-job/stop.sh` -- kills Flink, cleans PIDs
-- `/opt/flink-job/start.sh` -- just submits the job (assumes cluster is running)
+- `/opt/flink-job/restart.sh` -- restarts Flink cluster, submits job
+- `/opt/flink-job/stop.sh` -- cancels running jobs (leaves cluster up)
 
 ## Troubleshooting
 
